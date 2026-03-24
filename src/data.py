@@ -70,10 +70,11 @@ VALID_LABEL_VALUES = {1.0, -0.1, -1.0}
 
 @dataclass
 class Position:
-    tensor: torch.Tensor    # (14, 8, 8) float32
-    value:  float           # label: +1.0, -0.1, or -1.0
-    fen:    str             # for debugging and deduplication
-    game_id: int            # game index — used for train/val split
+    tensor:   torch.Tensor  # (14, 8, 8) float32
+    value:    float         # label: +1.0, -0.1, or -1.0
+    move_idx: int           # move played from this position (from_sq*64 + to_sq)
+    fen:      str           # for debugging and deduplication
+    game_id:  int           # game index — used for train/val split
 
 
 # ---------------------------------------------------------------------------
@@ -135,14 +136,14 @@ def parse_pgn(pgn_path: str,
                 except ValueError:
                     pass
 
-            # --- Collect board states ---
+            # --- Collect (board_before_move, move) pairs ---
             board = game.board()
-            all_boards = []
+            pairs = []   # (board_before, move)
             for move in game.mainline_moves():
+                pairs.append((board.copy(), move))
                 board.push(move)
-                all_boards.append(board.copy())
 
-            n_moves = len(all_boards)
+            n_moves = len(pairs)
             if n_moves < MIN_GAME_MOVES or n_moves > MAX_GAME_MOVES:
                 games_skipped += 1
                 continue
@@ -159,12 +160,13 @@ def parse_pgn(pgn_path: str,
             )
 
             for idx in sample_indices:
-                b = all_boards[idx]
+                b, move = pairs[idx]
                 value = outcome_to_value(result, b.turn)
                 tensor = board_to_tensor(b)
                 positions.append(Position(
                     tensor=tensor,
                     value=value,
+                    move_idx=move.from_square * 64 + move.to_square,
                     fen=b.fen(),
                     game_id=game_id,
                 ))
@@ -400,9 +402,10 @@ def split_and_save(positions: List[Position],
     # Save
     def pack(subset):
         return {
-            "tensors": torch.stack([p.tensor for p in subset]),  # (N, 14, 8, 8)
-            "values":  torch.tensor([p.value for p in subset], dtype=torch.float32),
-            "fens":    [p.fen for p in subset],
+            "tensors":   torch.stack([p.tensor for p in subset]),   # (N, 14, 8, 8)
+            "values":    torch.tensor([p.value    for p in subset], dtype=torch.float32),
+            "move_idxs": torch.tensor([p.move_idx for p in subset], dtype=torch.long),
+            "fens":      [p.fen for p in subset],
         }
 
     data = {
