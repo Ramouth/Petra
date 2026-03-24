@@ -116,17 +116,23 @@ class MCTS:
     ----------
     model      : PetraNet
     device     : torch.device
+    value_fn   : optional callable (chess.Board) -> float
+                 If provided, used instead of model.value().
+                 Enables ablation: swap in material-only or zero value
+                 without touching the model or the search logic.
     c_puct     : exploration constant (default 1.5)
     dir_alpha  : Dirichlet concentration for root noise (default 0.3)
     dir_frac   : fraction of Dirichlet noise mixed into root priors (default 0.25)
     """
 
     def __init__(self, model, device,
+                 value_fn=None,
                  c_puct: float = 1.5,
                  dir_alpha: float = 0.3,
                  dir_frac: float = 0.25):
         self.model     = model
         self.device    = device
+        self.value_fn  = value_fn or (lambda b: model.value(b, device))
         self.dir_alpha = dir_alpha
         self.dir_frac  = dir_frac
 
@@ -209,10 +215,9 @@ class MCTS:
 
         node.expand(priors, move_list)
 
-    @torch.no_grad()
     def _evaluate(self, board: chess.Board) -> float:
         """Scalar value from the perspective of the side to move."""
-        return self.model.value(board, self.device)
+        return self.value_fn(board)
 
     def _terminal_value(self, board: chess.Board) -> float:
         """Score a finished game from the perspective of the side to move."""
