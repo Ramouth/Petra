@@ -81,11 +81,6 @@ If SF model passes the ablation gate:
 3. Full ablation + geometry probe
 
 SSH setup: key generated (`~/.ssh/gbar`), needs copying to DTU HPC (requires campus/VPN).
-```bash
-ssh s235437@transfer.gbar.dtu.dk mkdir -m 700 -p .ssh
-scp ~/.ssh/gbar.pub s235437@transfer.gbar.dtu.dk:.ssh/authorized_keys
-ssh s235437@transfer.gbar.dtu.dk chmod 600 .ssh/authorized_keys
-```
 
 ---
 
