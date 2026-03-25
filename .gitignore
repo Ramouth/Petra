@@ -1,0 +1,22 @@
+# Datasets (large binary files)
+*.pt
+*.pkl
+*.zst
+*_meta.json
+
+# Models
+models/
+
+# Logs
+*.log
+
+# SSH docs
+ssh.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Misc
+.claude/

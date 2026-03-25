@@ -272,7 +272,7 @@ ABLATION_STEPS = {
 }
 
 def run_ablation(model: Optional[PetraNet], n_games: int = 100,
-                 steps: list = None):
+                 steps: list = None, n_sim: int = 200):
     """
     Run the full ablation ladder or a subset of steps.
     model may be None for step 1 only.
@@ -291,14 +291,14 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
             a = GreedyAgent(model)
             b = RandomAgent(seed=0)
         elif step == 3:
-            a = MCTSAgent(model, value="zero")
+            a = MCTSAgent(model, n_simulations=n_sim, value="zero")
             b = GreedyAgent(model)
         elif step == 4:
-            a = MCTSAgent(model, value="material")
+            a = MCTSAgent(model, n_simulations=n_sim, value="material")
             b = GreedyAgent(model)
         elif step == 5:
-            a = MCTSAgent(model, value="learned")
-            b = MCTSAgent(model, value="material")
+            a = MCTSAgent(model, n_simulations=n_sim, value="learned")
+            b = MCTSAgent(model, n_simulations=n_sim, value="material")
 
         results[step] = run_match(a, b, n_games=n_games)
 
@@ -357,7 +357,7 @@ def main():
     steps = list(ABLATION_STEPS.keys()) if args.all_steps else \
             [args.step] if args.step else [5]
 
-    run_ablation(model, n_games=args.games, steps=steps)
+    run_ablation(model, n_games=args.games, steps=steps, n_sim=args.n_sim)
 
 
 if __name__ == "__main__":
