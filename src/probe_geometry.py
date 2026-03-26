@@ -24,7 +24,7 @@ import chess
 import numpy as np
 import torch
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import PetraNet
 from board import board_to_tensor
 from config import device

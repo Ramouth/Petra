@@ -45,7 +45,7 @@ import chess
 import chess.pgn
 import torch
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from board import board_to_tensor, outcome_to_value
 
 # Positions to skip at the start of each game (opening book noise)
