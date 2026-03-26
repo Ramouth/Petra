@@ -69,7 +69,7 @@ def run_epoch(model, loader, optimizer, is_train: bool):
     ctx = torch.enable_grad() if is_train else torch.no_grad()
     with ctx:
         for tensors, values, move_idxs in loader:
-            tensors   = tensors.to(device)
+            tensors   = tensors.float().to(device)   # uint8 → float32
             values    = values.to(device)
             move_idxs = move_idxs.to(device)
 

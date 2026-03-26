@@ -31,14 +31,16 @@ Usage
 """
 
 import argparse
+import io
 import json
 import os
 import random
 import sys
 import time
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List
 
+import numpy as np
 import chess
 import chess.pgn
 import torch
@@ -63,6 +65,16 @@ VAL_FRACTION = 0.05
 
 VALID_LABEL_VALUES = {1.0, -0.1, -1.0}
 
+# float32 can't represent -0.1 exactly; use tolerance for all label checks
+_LABEL_TOL = 1e-4
+
+def _label_class(v: float) -> str:
+    """Classify a label value tolerantly. Returns 'win', 'draw', 'loss', or 'invalid'."""
+    if abs(v - 1.0) < _LABEL_TOL:  return "win"
+    if abs(v + 1.0) < _LABEL_TOL:  return "loss"
+    if abs(v + 0.1) < _LABEL_TOL:  return "draw"
+    return "invalid"
+
 
 # ---------------------------------------------------------------------------
 # Data record
@@ -70,7 +82,7 @@ VALID_LABEL_VALUES = {1.0, -0.1, -1.0}
 
 @dataclass
 class Position:
-    tensor:   torch.Tensor  # (14, 8, 8) float32
+    tensor:   torch.Tensor  # (14, 8, 8) uint8  — binary, stored compact
     value:    float         # label: +1.0, -0.1, or -1.0
     move_idx: int           # move played from this position (from_sq*64 + to_sq)
     fen:      str           # for debugging and deduplication
@@ -81,109 +93,134 @@ class Position:
 # Parser
 # ---------------------------------------------------------------------------
 
-def parse_pgn(pgn_path: str,
-              max_games: int = 100_000,
-              min_elo: int = 0,
-              require_normal_termination: bool = True,
-              seed: int = 42) -> List[Position]:
+def _open_pgn(path: str):
+    if path.endswith(".zst"):
+        import zstandard
+        ctx = zstandard.ZstdDecompressor()
+        fh  = open(path, "rb")
+        return io.TextIOWrapper(ctx.stream_reader(fh), encoding="utf-8", errors="replace")
+    return open(path, errors="replace")
+
+
+def _iter_games(pgn_path: str, max_games: int, min_elo: int,
+                require_normal_termination: bool, rng: random.Random):
     """
-    Stream a PGN file and extract labeled positions.
-
-    Filters applied per game:
-      - Result must be "1-0", "0-1", or "1/2-1/2" (no abandoned/ongoing)
-      - Game length must be in [MIN_GAME_MOVES, MAX_GAME_MOVES]
-      - Both players must have Elo >= min_elo (if headers present)
-      - Termination must be "Normal" if require_normal_termination=True
-
-    Position sampling:
-      - Skip first SKIP_OPENING_MOVES moves
-      - Sample up to MAX_POSITIONS_PER_GAME positions uniformly
+    Generator. Yields (game_id, result, [(board, move), ...]) for each
+    accepted game. Applies all game-level filters inline.
     """
-    rng = random.Random(seed)
-    positions = []
-    game_id = 0
-    games_parsed = 0
-    games_skipped = 0
-
-    print(f"Parsing {pgn_path} (max_games={max_games:,}) ...")
-    t0 = time.time()
-
-    with open(pgn_path, errors="replace") as f:
+    games_parsed = games_skipped = 0
+    with _open_pgn(pgn_path) as f:
         while games_parsed < max_games:
             game = chess.pgn.read_game(f)
             if game is None:
                 break
 
-            # --- Game-level filters ---
             result = game.headers.get("Result", "*")
             if result not in ("1-0", "0-1", "1/2-1/2"):
                 games_skipped += 1
                 continue
 
             if require_normal_termination:
-                termination = game.headers.get("Termination", "")
-                if termination and termination.lower() not in ("normal", ""):
+                term = game.headers.get("Termination", "")
+                if term and term.lower() not in ("normal", ""):
                     games_skipped += 1
                     continue
 
             if min_elo > 0:
                 try:
-                    w_elo = int(game.headers.get("WhiteElo", "0") or "0")
-                    b_elo = int(game.headers.get("BlackElo", "0") or "0")
-                    if w_elo < min_elo or b_elo < min_elo:
+                    w = int(game.headers.get("WhiteElo", "0") or "0")
+                    b = int(game.headers.get("BlackElo", "0") or "0")
+                    if w < min_elo or b < min_elo:
                         games_skipped += 1
                         continue
                 except ValueError:
                     pass
 
-            # --- Collect (board_before_move, move) pairs ---
             board = game.board()
-            pairs = []   # (board_before, move)
+            pairs = []
             for move in game.mainline_moves():
                 pairs.append((board.copy(), move))
                 board.push(move)
 
-            n_moves = len(pairs)
-            if n_moves < MIN_GAME_MOVES or n_moves > MAX_GAME_MOVES:
+            n = len(pairs)
+            if n < MIN_GAME_MOVES or n > MAX_GAME_MOVES:
                 games_skipped += 1
                 continue
 
-            # --- Sample positions after opening ---
-            candidate_indices = list(range(SKIP_OPENING_MOVES, n_moves))
-            if not candidate_indices:
+            candidates = list(range(SKIP_OPENING_MOVES, n))
+            if not candidates:
                 games_skipped += 1
                 continue
 
-            sample_indices = rng.sample(
-                candidate_indices,
-                min(MAX_POSITIONS_PER_GAME, len(candidate_indices))
-            )
+            sampled = rng.sample(candidates, min(MAX_POSITIONS_PER_GAME, len(candidates)))
+            yield games_parsed, result, [(pairs[i][0], pairs[i][1]) for i in sampled]
 
-            for idx in sample_indices:
-                b, move = pairs[idx]
-                value = outcome_to_value(result, b.turn)
-                tensor = board_to_tensor(b)
-                positions.append(Position(
-                    tensor=tensor,
-                    value=value,
-                    move_idx=move.from_square * 64 + move.to_square,
-                    fen=b.fen(),
-                    game_id=game_id,
-                ))
-
-            game_id += 1
             games_parsed += 1
 
-            if games_parsed % 10_000 == 0:
-                elapsed = time.time() - t0
-                print(f"  {games_parsed:,} games parsed, "
-                      f"{len(positions):,} positions, "
-                      f"{elapsed:.0f}s elapsed")
+
+def parse_pgn(pgn_path: str,
+              max_games: int = 200_000,
+              min_elo: int = 0,
+              require_normal_termination: bool = True,
+              seed: int = 42) -> List[Position]:
+    """
+    Stream a PGN file and return a list of Position objects.
+
+    Memory: pre-allocates uint8 tensor arrays (896 bytes/position instead
+    of ~4.5KB for float32 Python objects). Converts to float32 at training time.
+
+    For scale guidance:
+      100k games → ~800k positions → ~850MB
+      200k games → ~1.6M positions → ~1.7GB
+      500k games → ~4M positions   → ~4.3GB
+    """
+    rng = random.Random(seed)
+    max_positions = max_games * MAX_POSITIONS_PER_GAME
+
+    # Estimate and report memory
+    mb = max_positions * (14 * 8 * 8) / 1024 / 1024
+    print(f"Parsing {pgn_path} (max_games={max_games:,}) ...")
+    print(f"Pre-allocating ~{mb:.0f} MB for up to {max_positions:,} positions ...")
+
+    # Pre-allocate as uint8 — board values are binary (0/1)
+    tensor_buf   = np.empty((max_positions, 14, 8, 8), dtype=np.uint8)
+    value_buf    = np.empty(max_positions, dtype=np.float32)
+    move_idx_buf = np.empty(max_positions, dtype=np.int32)
+    fens         = []
+    game_ids     = []
+
+    count = 0
+    t0 = time.time()
+
+    for game_id, result, sampled_pairs in _iter_games(
+            pgn_path, max_games, min_elo, require_normal_termination, rng):
+
+        for b, move in sampled_pairs:
+            tensor_buf[count]   = board_to_tensor(b).numpy().astype(np.uint8)
+            value_buf[count]    = outcome_to_value(result, b.turn)
+            move_idx_buf[count] = move.from_square * 64 + move.to_square
+            fens.append(b.fen())
+            game_ids.append(game_id)
+            count += 1
+
+        if (game_id + 1) % 10_000 == 0:
+            elapsed = time.time() - t0
+            print(f"  {game_id+1:,} games, {count:,} positions, {elapsed:.0f}s")
 
     elapsed = time.time() - t0
-    print(f"Done: {games_parsed:,} games parsed, "
-          f"{games_skipped:,} skipped, "
-          f"{len(positions):,} positions in {elapsed:.1f}s")
+    print(f"Done: {game_id+1:,} games, {count:,} positions in {elapsed:.1f}s")
+
+    # Convert to Position list (views into pre-allocated arrays — no copy)
+    positions = [
+        Position(
+            tensor=torch.from_numpy(tensor_buf[i]),
+            value=float(value_buf[i]),
+            move_idx=int(move_idx_buf[i]),
+            fen=fens[i],
+            game_id=game_ids[i],
+        )
+        for i in range(count)
+    ]
     return positions
 
 
@@ -220,10 +257,10 @@ def validate_dataset(positions: List[Position], strict: bool = True) -> bool:
     print(f"{'='*60}")
 
     # ------------------------------------------------------------------
-    # Check 1: label values are in the allowed set
+    # Check 1: label values are in the allowed set (tolerance for float32)
     # ------------------------------------------------------------------
     bad_labels = [(i, p.value) for i, p in enumerate(positions)
-                  if p.value not in VALID_LABEL_VALUES]
+                  if _label_class(p.value) == "invalid"]
     if bad_labels:
         errors.append(f"CHECK 1 FAIL — {len(bad_labels)} invalid label values "
                       f"(first 5: {[v for _, v in bad_labels[:5]]})")
@@ -255,9 +292,9 @@ def validate_dataset(positions: List[Position], strict: bool = True) -> bool:
     # ------------------------------------------------------------------
     # Check 3: label distribution
     # ------------------------------------------------------------------
-    n_win  = sum(1 for p in positions if p.value == 1.0)
-    n_draw = sum(1 for p in positions if p.value == -0.1)
-    n_loss = sum(1 for p in positions if p.value == -1.0)
+    n_win  = sum(1 for p in positions if _label_class(p.value) == "win")
+    n_draw = sum(1 for p in positions if _label_class(p.value) == "draw")
+    n_loss = sum(1 for p in positions if _label_class(p.value) == "loss")
     pct_win  = 100 * n_win  / n
     pct_draw = 100 * n_draw / n
     pct_loss = 100 * n_loss / n
@@ -322,13 +359,20 @@ def validate_dataset(positions: List[Position], strict: bool = True) -> bool:
 
     sign_inconsistencies = 0
     for gid, gpos in list(game_positions.items())[:100]:
-        # Sort by checking a few pairs: if two consecutive positions are from
-        # the same game, they should have opposite labels (unless one is a draw).
         for a, b in zip(gpos, gpos[1:]):
-            if a.value == -0.1 or b.value == -0.1:
-                continue  # draws are uniform, can't check
-            if a.value == b.value:
-                sign_inconsistencies += 1
+            if _label_class(a.value) == "draw" or _label_class(b.value) == "draw":
+                continue
+            # Side-to-move is encoded in plane 12 (all 1s = White to move)
+            a_white = a.tensor[12].sum().item() == 64
+            b_white = b.tensor[12].sum().item() == 64
+            if a_white == b_white:
+                # Same side to move → same label expected (both see win or both see loss)
+                if _label_class(a.value) != _label_class(b.value):
+                    sign_inconsistencies += 1
+            else:
+                # Different side to move → labels must be opposite
+                if _label_class(a.value) == _label_class(b.value):
+                    sign_inconsistencies += 1
 
     if sign_inconsistencies == 0:
         print("CHECK 6 PASS — within-game label signs are consistent")
@@ -402,7 +446,8 @@ def split_and_save(positions: List[Position],
     # Save
     def pack(subset):
         return {
-            "tensors":   torch.stack([p.tensor for p in subset]),   # (N, 14, 8, 8)
+            # uint8 on disk — convert to float32 in DataLoader via .float()
+            "tensors":   torch.stack([p.tensor for p in subset]),   # (N, 14, 8, 8) uint8
             "values":    torch.tensor([p.value    for p in subset], dtype=torch.float32),
             "move_idxs": torch.tensor([p.move_idx for p in subset], dtype=torch.long),
             "fens":      [p.fen for p in subset],
