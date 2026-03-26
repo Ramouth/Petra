@@ -123,7 +123,8 @@ def _play_game(model_path: str, n_sim: int, game_idx: int) -> dict:
             resign_counter = 0
 
         # --- Record position (before pushing move) ---
-        positions.append((board.fen(), board_to_tensor(board), visit_dist, half_move))
+        # Use .numpy() to avoid PyTorch shared-memory fd passing across pool workers
+        positions.append((board.fen(), board_to_tensor(board).numpy(), visit_dist, half_move))
 
         board.push(move)
 
@@ -202,7 +203,7 @@ def play_games(model_path: str, n_games: int, n_sim: int, workers: int) -> dict:
         outcome = result["outcome"]
         for fen, tensor, visit_dist, _ in result["positions"]:
             all_fens.append(fen)
-            all_tensors.append(tensor)
+            all_tensors.append(torch.from_numpy(tensor))
             all_visit_dists.append(visit_dist)
             all_values.append(_outcome_to_value(outcome, fen))
             best_move = max(visit_dist, key=visit_dist.get) if visit_dist else None
