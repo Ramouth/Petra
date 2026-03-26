@@ -147,7 +147,8 @@ def train(dataset_path: str,
           batch_size: int = 512,
           lr: float = 1e-3,
           patience: int = 5,
-          seed: int = 42):
+          seed: int = 42,
+          init_model: str = None):
 
     torch.manual_seed(seed)
     os.makedirs(out_dir, exist_ok=True)
@@ -157,6 +158,9 @@ def train(dataset_path: str,
     val_loader   = make_loader("val",   batch_size=batch_size, shuffle=False)
 
     model = PetraNet().to(device)
+    if init_model:
+        model.load_state_dict(torch.load(init_model, map_location=device, weights_only=True))
+        print(f"Loaded starting weights from {init_model}")
     n_params = sum(p.numel() for p in model.parameters())
     print(f"PetraNet: {n_params:,} parameters  |  device: {device}")
 
@@ -258,13 +262,15 @@ def _sanity_check(model: PetraNet):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset",    required=True)
-    ap.add_argument("--out",        default="models")
-    ap.add_argument("--epochs",     type=int,   default=15)
-    ap.add_argument("--batch-size", type=int,   default=512)
-    ap.add_argument("--lr",         type=float, default=1e-3)
-    ap.add_argument("--patience",   type=int,   default=5)
-    ap.add_argument("--seed",       type=int,   default=42)
+    ap.add_argument("--dataset",     required=True)
+    ap.add_argument("--out",         default="models")
+    ap.add_argument("--epochs",      type=int,   default=15)
+    ap.add_argument("--batch-size",  type=int,   default=512)
+    ap.add_argument("--lr",          type=float, default=1e-3)
+    ap.add_argument("--patience",    type=int,   default=5)
+    ap.add_argument("--seed",        type=int,   default=42)
+    ap.add_argument("--init-model",  default=None,
+                    help="Load these weights before training (zigzag fine-tuning)")
     args = ap.parse_args()
 
     train(
@@ -275,6 +281,7 @@ def main():
         lr=args.lr,
         patience=args.patience,
         seed=args.seed,
+        init_model=args.init_model,
     )
 
 

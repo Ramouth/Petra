@@ -157,14 +157,15 @@ def run_round(r: int, n_sim: int, sf_depth: int, n_games: int, lr: float,
         return False
 
     # --- 3. Train ---
-    print(f"\n--- Step 3: Train (lr={lr:.0e}) ---")
+    print(f"\n--- Step 3: Train (lr={lr:.0e}, init={prev_model}) ---")
     rc = _run([
         sys.executable, os.path.join(SRC_DIR, "train.py"),
-        "--dataset",  sf_pt,
-        "--out",      out_dir,
-        "--lr",       str(lr),
-        "--epochs",   "15",
-        "--patience", "3",
+        "--dataset",    sf_pt,
+        "--out",        out_dir,
+        "--lr",         str(lr),
+        "--epochs",     "15",
+        "--patience",   "3",
+        "--init-model", prev_model,
     ], dry_run)
     if rc != 0:
         print(f"  Training failed (exit {rc}). Aborting round.")
