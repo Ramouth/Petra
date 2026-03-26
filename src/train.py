@@ -40,26 +40,40 @@ from config import device
 # ---------------------------------------------------------------------------
 
 def load_dataset(path: str):
-    """Load a dataset saved by data.py. Returns (train_loader, val_loader)."""
+    """
+    Load a dataset saved by data.py or selfplay.py.
+
+    Supervised datasets have 'move_idxs' (int64 one-hot target).
+    Self-play datasets additionally have 'visit_dists' (float32 dense target).
+    The loader returns a 4-tuple when visit_dists are present, 3-tuple otherwise.
+    """
     print(f"Loading dataset from {path} ...")
     data = torch.load(path, map_location="cpu", weights_only=False)
 
+    has_visit_dists = "visit_dists" in data.get("train", {})
+    if has_visit_dists:
+        print("  Self-play dataset detected — using dense policy loss (visit distributions)")
+
     def make_loader(split, batch_size, shuffle):
         d = data[split]
-        ds = TensorDataset(d["tensors"], d["values"], d["move_idxs"])
+        if has_visit_dists:
+            ds = TensorDataset(d["tensors"], d["values"], d["move_idxs"], d["visit_dists"])
+        else:
+            ds = TensorDataset(d["tensors"], d["values"], d["move_idxs"])
         return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                           num_workers=0, pin_memory=(device.type == "cuda"))
 
     meta = data.get("meta", {})
-    print(f"  train: {meta.get('n_train', '?'):,}  val: {meta.get('n_val', '?'):,}")
-    return make_loader, data
+    print(f"  train: {meta.get('n_train', '?'):,}  val: {meta.get('n_val', '?'):,}  "
+          f"source: {meta.get('source', 'supervised')}")
+    return make_loader, data, has_visit_dists
 
 
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
-def run_epoch(model, loader, optimizer, is_train: bool):
+def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = False):
     model.train(is_train)
     total_loss = total_vloss = total_ploss = 0.0
     n_batches = 0
@@ -68,7 +82,13 @@ def run_epoch(model, loader, optimizer, is_train: bool):
 
     ctx = torch.enable_grad() if is_train else torch.no_grad()
     with ctx:
-        for tensors, values, move_idxs in loader:
+        for batch in loader:
+            if dense_policy:
+                tensors, values, move_idxs, visit_dists = batch
+                visit_dists = visit_dists.to(device)
+            else:
+                tensors, values, move_idxs = batch
+
             tensors   = tensors.float().to(device)   # uint8 → float32
             values    = values.to(device)
             move_idxs = move_idxs.to(device)
@@ -77,7 +97,12 @@ def run_epoch(model, loader, optimizer, is_train: bool):
             value_pred = value_pred.squeeze(1)
 
             vloss = F.mse_loss(value_pred, values)
-            ploss = F.cross_entropy(policy_logits, move_idxs)
+            if dense_policy:
+                # KL(visit_dist || softmax(logits)) — dense target from MCTS
+                log_probs = F.log_softmax(policy_logits, dim=-1)
+                ploss = -(visit_dists * log_probs).sum(dim=-1).mean()
+            else:
+                ploss = F.cross_entropy(policy_logits, move_idxs)
             loss  = vloss + ploss
 
             if is_train:
@@ -127,7 +152,7 @@ def train(dataset_path: str,
     torch.manual_seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
-    make_loader, data = load_dataset(dataset_path)
+    make_loader, data, dense_policy = load_dataset(dataset_path)
     train_loader = make_loader("train", batch_size=batch_size, shuffle=True)
     val_loader   = make_loader("val",   batch_size=batch_size, shuffle=False)
 
@@ -150,8 +175,8 @@ def train(dataset_path: str,
     for epoch in range(1, epochs + 1):
         t0 = time.time()
 
-        train_m = run_epoch(model, train_loader, optimizer, is_train=True)
-        val_m   = run_epoch(model, val_loader,   optimizer, is_train=False)
+        train_m = run_epoch(model, train_loader, optimizer, is_train=True,  dense_policy=dense_policy)
+        val_m   = run_epoch(model, val_loader,   optimizer, is_train=False, dense_policy=dense_policy)
 
         scheduler.step(val_m["loss"])
         lr_now = optimizer.param_groups[0]["lr"]
