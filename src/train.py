@@ -45,7 +45,8 @@ def load_dataset(path: str):
 
     Supervised datasets have 'move_idxs' (int64 one-hot target).
     Self-play datasets additionally have 'visit_dists' (float32 dense target).
-    The loader returns a 4-tuple when visit_dists are present, 3-tuple otherwise.
+    Always returns 4-tuple loaders — supervised positions get a one-hot visit_dist
+    so they can be mixed with self-play data in a single DataLoader.
     """
     print(f"Loading dataset from {path} ...")
     data = torch.load(path, map_location="cpu", weights_only=False)
@@ -53,20 +54,72 @@ def load_dataset(path: str):
     has_visit_dists = "visit_dists" in data.get("train", {})
     if has_visit_dists:
         print("  Self-play dataset detected — using dense policy loss (visit distributions)")
+    else:
+        print("  Supervised dataset detected — one-hot visit distributions will be created")
 
     def make_loader(split, batch_size, shuffle):
         d = data[split]
-        if has_visit_dists:
-            ds = TensorDataset(d["tensors"], d["values"], d["move_idxs"], d["visit_dists"])
-        else:
-            ds = TensorDataset(d["tensors"], d["values"], d["move_idxs"])
+        ds = TensorDataset(
+            d["tensors"], d["values"], d["move_idxs"], _ensure_visit_dists(d)
+        )
         return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
                           num_workers=0, pin_memory=(device.type == "cuda"))
 
     meta = data.get("meta", {})
     print(f"  train: {meta.get('n_train', '?'):,}  val: {meta.get('n_val', '?'):,}  "
           f"source: {meta.get('source', 'supervised')}")
-    return make_loader, data, has_visit_dists
+    return make_loader, data, True   # always dense_policy=True now
+
+
+def _ensure_visit_dists(d: dict) -> torch.Tensor:
+    """Return visit_dists tensor; create one-hot from move_idxs if absent."""
+    if "visit_dists" in d:
+        return d["visit_dists"]
+    n = len(d["move_idxs"])
+    vd = torch.zeros(n, 4096, dtype=torch.float32)
+    vd[torch.arange(n), d["move_idxs"]] = 1.0
+    return vd
+
+
+def mix_anchor(primary_data: dict, anchor_path: str, anchor_frac: float) -> dict:
+    """
+    Mix a fraction of anchor (supervised SF) positions into the primary training split.
+
+    anchor_frac : fraction of primary train size to sample from anchor.
+                  e.g. 0.15 → 15% extra positions from the SF oracle dataset.
+
+    Val split is kept pure (primary only) so validation measures self-play generalisation.
+    """
+    print(f"\nMixing anchor dataset: {anchor_path}  (frac={anchor_frac})")
+    anchor = torch.load(anchor_path, map_location="cpu", weights_only=False)
+
+    n_primary = len(primary_data["train"]["tensors"])
+    n_sample  = max(1, int(n_primary * anchor_frac))
+    n_anchor  = len(anchor["train"]["tensors"])
+    n_sample  = min(n_sample, n_anchor)
+
+    idx = torch.randperm(n_anchor)[:n_sample]
+    a   = anchor["train"]
+
+    # One-hot visit_dists for supervised anchor positions
+    vd = torch.zeros(n_anchor, 4096, dtype=torch.float32)
+    vd[torch.arange(n_anchor), a["move_idxs"]] = 1.0
+
+    primary_vd = _ensure_visit_dists(primary_data["train"])
+    mixed = {
+        "tensors":     torch.cat([primary_data["train"]["tensors"],   a["tensors"][idx]]),
+        "values":      torch.cat([primary_data["train"]["values"],    a["values"][idx]]),
+        "move_idxs":   torch.cat([primary_data["train"]["move_idxs"], a["move_idxs"][idx]]),
+        "visit_dists": torch.cat([primary_vd,                         vd[idx]]),
+    }
+
+    print(f"  anchor positions sampled: {n_sample:,} / {n_anchor:,}")
+    print(f"  mixed train size: {len(mixed['tensors']):,}  "
+          f"(was {n_primary:,}, +{n_sample:,} anchor)")
+
+    result = dict(primary_data)
+    result["train"] = mixed
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +201,26 @@ def train(dataset_path: str,
           lr: float = 1e-3,
           patience: int = 5,
           seed: int = 42,
-          init_model: str = None):
+          init_model: str = None,
+          anchor_dataset: str = None,
+          anchor_frac: float = 0.15):
 
     torch.manual_seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
     make_loader, data, dense_policy = load_dataset(dataset_path)
+
+    if anchor_dataset:
+        data = mix_anchor(data, anchor_dataset, anchor_frac)
+        # Rebuild make_loader to use the mixed data (visit_dists created if absent)
+        def make_loader(split, batch_size, shuffle):
+            d = data[split]
+            ds = TensorDataset(
+                d["tensors"], d["values"], d["move_idxs"], _ensure_visit_dists(d)
+            )
+            return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                              num_workers=0, pin_memory=(device.type == "cuda"))
+
     train_loader = make_loader("train", batch_size=batch_size, shuffle=True)
     val_loader   = make_loader("val",   batch_size=batch_size, shuffle=False)
 
@@ -271,6 +338,11 @@ def main():
     ap.add_argument("--seed",        type=int,   default=42)
     ap.add_argument("--init-model",  default=None,
                     help="Load these weights before training (zigzag fine-tuning)")
+    ap.add_argument("--anchor-dataset", default=None,
+                    help="Path to supervised SF dataset to mix in as an anchor "
+                         "(prevents value collapse). Typically dataset_sf.pt.")
+    ap.add_argument("--anchor-frac", type=float, default=0.15,
+                    help="Fraction of primary train size to sample from anchor (default: 0.15)")
     args = ap.parse_args()
 
     train(
@@ -282,6 +354,8 @@ def main():
         patience=args.patience,
         seed=args.seed,
         init_model=args.init_model,
+        anchor_dataset=args.anchor_dataset,
+        anchor_frac=args.anchor_frac,
     )
 
 

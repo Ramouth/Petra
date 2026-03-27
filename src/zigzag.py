@@ -111,7 +111,9 @@ def _check_gate(log_path: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_round(r: int, n_sim: int, sf_depth: int, n_games: int, lr: float,
-              workers: int, dry_run: bool) -> bool:
+              workers: int, dry_run: bool,
+              anchor_dataset: str = None, anchor_frac: float = 0.15,
+              opening_book: str = None) -> bool:
     """
     Execute one full zigzag round. Returns True if gate passed.
     """
@@ -132,14 +134,17 @@ def run_round(r: int, n_sim: int, sf_depth: int, n_games: int, lr: float,
 
     # --- 1. Self-play ---
     print(f"\n--- Step 1: Self-play ({n_games} games, n_sim={n_sim}) ---")
-    rc = _run([
+    selfplay_cmd = [
         sys.executable, os.path.join(SRC_DIR, "selfplay.py"),
         "--model",   prev_model,
         "--games",   str(n_games),
         "--n-sim",   str(n_sim),
         "--out",     selfplay_pt,
         "--workers", str(workers),
-    ], dry_run)
+    ]
+    if opening_book:
+        selfplay_cmd += ["--opening-book", opening_book]
+    rc = _run(selfplay_cmd, dry_run)
     if rc != 0:
         print(f"  Self-play failed (exit {rc}). Aborting round.")
         return False
@@ -158,7 +163,7 @@ def run_round(r: int, n_sim: int, sf_depth: int, n_games: int, lr: float,
 
     # --- 3. Train ---
     print(f"\n--- Step 3: Train (lr={lr:.0e}, init={prev_model}) ---")
-    rc = _run([
+    train_cmd = [
         sys.executable, os.path.join(SRC_DIR, "train.py"),
         "--dataset",    sf_pt,
         "--out",        out_dir,
@@ -166,7 +171,11 @@ def run_round(r: int, n_sim: int, sf_depth: int, n_games: int, lr: float,
         "--epochs",     "15",
         "--patience",   "3",
         "--init-model", prev_model,
-    ], dry_run)
+    ]
+    if anchor_dataset:
+        train_cmd += ["--anchor-dataset", anchor_dataset,
+                      "--anchor-frac",    str(anchor_frac)]
+    rc = _run(train_cmd, dry_run)
     if rc != 0:
         print(f"  Training failed (exit {rc}). Aborting round.")
         return False
@@ -207,6 +216,13 @@ def main():
                     help="Override n_games for all rounds (prototype: 50)")
     ap.add_argument("--workers",     type=int, default=1,
                     help="Parallel self-play workers")
+    ap.add_argument("--opening-book", type=str, default=None,
+                    help="Path to FEN file (gen_openings.py output) for self-play seeding.")
+    ap.add_argument("--sf-anchor",   type=str, default=None,
+                    help="Path to supervised SF dataset mixed into each training round "
+                         "as a collapse anchor (e.g. dataset_sf.pt). Recommended: 15%%.")
+    ap.add_argument("--anchor-frac", type=float, default=0.15,
+                    help="Fraction of self-play train size to sample from anchor (default: 0.15)")
     ap.add_argument("--dry-run",     action="store_true",
                     help="Print commands without executing")
     args = ap.parse_args()
@@ -233,6 +249,9 @@ def main():
             r=r, n_sim=n_sim, sf_depth=sf_depth,
             n_games=n_games, lr=lr,
             workers=args.workers, dry_run=args.dry_run,
+            anchor_dataset=args.sf_anchor,
+            anchor_frac=args.anchor_frac,
+            opening_book=args.opening_book,
         )
 
         if not passed:
