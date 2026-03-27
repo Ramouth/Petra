@@ -85,7 +85,7 @@ REEVAL_CMD="cd $SRC && $PYTHON reeval_stockfish.py \
   --dataset $SELFPLAY_PT \
   --out $SF_PT \
   --depth $SF_DEPTH \
-  --stockfish ~/bin/stockfish"
+  --stockfish /zhome/81/b/206091/bin/stockfish"
 
 if [ -n "$DRY_RUN" ]; then
   echo "[reeval]    $REEVAL_CMD"
