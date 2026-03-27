@@ -10,8 +10,9 @@ models/
 # Logs
 *.log
 
-# SSH docs
+# SSH docs and operational notes
 ssh.txt
+HPC_ACCESS.md
 
 # Python
 __pycache__/
