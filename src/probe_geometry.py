@@ -37,12 +37,19 @@ from config import device
 def load_geometry_vectors(model: PetraNet, dataset_path: str, n: int = 5000):
     """
     Load n positions from the val set, run through geometry(), return
-    (vectors, labels) as numpy arrays.
+    (vectors, values) as numpy arrays.
+
+    Values are normalised to White-absolute perspective (dataset stores
+    side-to-move-relative values; plane 12 = 1.0 means White to move).
     """
     data   = torch.load(dataset_path, map_location="cpu", weights_only=False)
     split  = data["val"]
     tensors = split["tensors"][:n].float()   # (N, 14, 8, 8) uint8 → float32
-    values  = split["values"][:n].numpy()    # (N,)
+    values  = split["values"][:n].numpy()    # (N,)  side-to-move relative
+
+    # Flip to White-absolute: if Black to move, negate (plane 12 = 0 → Black)
+    white_to_move = tensors[:, 12, 0, 0].numpy() > 0.5   # (N,) bool
+    values = np.where(white_to_move, values, -values)     # (N,)  White-absolute
 
     model.eval()
     batch_size = 256
@@ -60,7 +67,7 @@ def load_geometry_vectors(model: PetraNet, dataset_path: str, n: int = 5000):
 def _label_class(v: float) -> str:
     if abs(v - 1.0)  < 1e-4: return "win"
     if abs(v + 1.0)  < 1e-4: return "loss"
-    if abs(v + 0.1)  < 1e-4: return "draw"
+    if abs(abs(v) - 0.1) < 1e-4: return "draw"   # catches ±0.1 after perspective flip
     return "invalid"
 
 
