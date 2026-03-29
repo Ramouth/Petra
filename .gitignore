@@ -19,5 +19,10 @@ __pycache__/
 *.pyc
 *.pyo
 
+# PGN game files (large)
+*.pgn
+
 # Misc
 .claude/
+nohup.out
+eduroam-linux-NonWindows.py
