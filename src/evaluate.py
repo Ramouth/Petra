@@ -39,6 +39,8 @@ import time
 from typing import Callable, Optional
 
 import chess
+import chess.pgn
+import io
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -182,10 +184,10 @@ class MCTSAgent(Agent):
 # Game runner
 # ---------------------------------------------------------------------------
 
-def play_game(white: Agent, black: Agent, max_moves: int = 300) -> str:
+def play_game(white: Agent, black: Agent, max_moves: int = 300):
     """
-    Play one game. Returns "1-0", "0-1", or "1/2-1/2".
-    Enforces a move limit to prevent infinite games.
+    Play one game. Returns (result, board) where result is "1-0", "0-1",
+    or "1/2-1/2" and board contains the full move history.
     """
     board = chess.Board()
     agents = {chess.WHITE: white, chess.BLACK: black}
@@ -198,12 +200,14 @@ def play_game(white: Agent, black: Agent, max_moves: int = 300) -> str:
 
     outcome = board.outcome()
     if outcome is None:
-        return "1/2-1/2"   # move limit reached
-    if outcome.winner == chess.WHITE:
-        return "1-0"
-    if outcome.winner == chess.BLACK:
-        return "0-1"
-    return "1/2-1/2"
+        result = "1/2-1/2"   # move limit reached
+    elif outcome.winner == chess.WHITE:
+        result = "1-0"
+    elif outcome.winner == chess.BLACK:
+        result = "0-1"
+    else:
+        result = "1/2-1/2"
+    return result, board
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +219,7 @@ def _game_worker(args):
     Play one game in a subprocess. Each worker loads its own model copy.
     Returns "win", "loss", or "draw" from agent_a's perspective.
     """
-    game_idx, model_path, baseline_model_path, agent_a_cfg, agent_b_cfg, max_moves = args
+    game_idx, model_path, baseline_model_path, agent_a_cfg, agent_b_cfg, max_moves, record_pgn = args
 
     def _load(path):
         if not path:
@@ -242,14 +246,36 @@ def _game_worker(args):
 
     a, b = _make(agent_a_cfg, model_a), _make(agent_b_cfg, model_b)
     white, black = (a, b) if game_idx % 2 == 0 else (b, a)
-    result = play_game(white, black, max_moves=max_moves)
+    result, board = play_game(white, black, max_moves=max_moves)
 
     if result == "1/2-1/2":
-        return "draw"
-    a_is_white = (game_idx % 2 == 0)
-    if (result == "1-0") == a_is_white:
-        return "win"
-    return "loss"
+        outcome = "draw"
+    else:
+        a_is_white = (game_idx % 2 == 0)
+        outcome = "win" if (result == "1-0") == a_is_white else "loss"
+
+    pgn_str = None
+    if record_pgn:
+        game = chess.pgn.Game()
+        game.headers["White"] = white.name
+        game.headers["Black"] = black.name
+        game.headers["Result"] = result
+        board_outcome = board.outcome()
+        if board_outcome is not None:
+            game.headers["Termination"] = board_outcome.termination.name
+        else:
+            game.headers["Termination"] = "move_limit"
+        game.headers["PlyCount"] = str(len(board.move_stack))
+        node = game
+        tmp = chess.Board()
+        for move in board.move_stack:
+            node = node.add_variation(move)
+            tmp.push(move)
+        buf = io.StringIO()
+        print(game, file=buf)
+        pgn_str = buf.getvalue()
+
+    return outcome, pgn_str
 
 
 def run_match(agent_a: Agent, agent_b: Agent,
@@ -258,7 +284,8 @@ def run_match(agent_a: Agent, agent_b: Agent,
               model_path: str = None,
               baseline_model_path: str = None,
               workers: int = 1,
-              max_moves: int = 300) -> dict:
+              max_moves: int = 300,
+              pgn_out: str = None) -> dict:
     """
     Play n_games between agent_a and agent_b, alternating colours every game.
     Returns a results dict with win/draw/loss counts and ELO estimates.
@@ -273,12 +300,15 @@ def run_match(agent_a: Agent, agent_b: Agent,
     t0 = time.time()
     report_every = max(1, n_games // 10)
 
+    record_pgn = pgn_out is not None
     args_list = [
-        (i, model_path, baseline_model_path, agent_a.cfg, agent_b.cfg, max_moves)
+        (i, model_path, baseline_model_path, agent_a.cfg, agent_b.cfg, max_moves, record_pgn)
         for i in range(n_games)
     ]
 
-    def _record(outcome, i):
+    pgn_file = open(pgn_out, "w") if pgn_out else None
+
+    def _record(outcome, pgn_str, i):
         nonlocal wins, draws, losses
         if outcome == "draw":
             draws += 1
@@ -286,6 +316,9 @@ def run_match(agent_a: Agent, agent_b: Agent,
             wins += 1
         else:
             losses += 1
+        if pgn_file and pgn_str:
+            pgn_file.write(pgn_str + "\n")
+            pgn_file.flush()
         if verbose and (i + 1) % report_every == 0:
             total = wins + draws + losses
             wr = (wins + 0.5 * draws) / total
@@ -293,15 +326,19 @@ def run_match(agent_a: Agent, agent_b: Agent,
                   f"W={wins} D={draws} L={losses}  "
                   f"wr={wr:.3f}  ({time.time()-t0:.0f}s)")
 
-    if workers > 1:
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=workers) as pool:
-            for i, outcome in enumerate(pool.imap(_game_worker, args_list)):
-                _record(outcome, i)
-    else:
-        for i, args in enumerate(args_list):
-            outcome = _game_worker(args)
-            _record(outcome, i)
+    try:
+        if workers > 1:
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=workers) as pool:
+                for i, (outcome, pgn_str) in enumerate(pool.imap(_game_worker, args_list)):
+                    _record(outcome, pgn_str, i)
+        else:
+            for i, args in enumerate(args_list):
+                outcome, pgn_str = _game_worker(args)
+                _record(outcome, pgn_str, i)
+    finally:
+        if pgn_file:
+            pgn_file.close()
 
     return _summarise(agent_a.name, agent_b.name, wins, draws, losses)
 
@@ -365,7 +402,8 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
                  model_path: str = None,
                  baseline_model: Optional[PetraNet] = None,
                  baseline_model_path: str = None,
-                 workers: int = 1):
+                 workers: int = 1,
+                 pgn_out: str = None):
     """
     Run the full ablation ladder or a subset of steps.
     model may be None for step 1 only.
@@ -404,7 +442,8 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
         results[step] = run_match(a, b, n_games=n_games,
                                   model_path=model_path,
                                   baseline_model_path=baseline_model_path,
-                                  workers=workers)
+                                  workers=workers,
+                                  pgn_out=pgn_out)
 
     _print_ablation_summary(results)
     return results
@@ -453,6 +492,8 @@ def main():
     ap.add_argument("--baseline-model", default=None,
                     help="Path to baseline model .pt for head-to-head (step 5 only). "
                          "If omitted, step 5 uses the material baseline.")
+    ap.add_argument("--pgn-out",        default=None,
+                    help="Path to write PGN file with all games (optional).")
     args = ap.parse_args()
 
     model = None
@@ -483,7 +524,8 @@ def main():
                  model_path=args.model,
                  baseline_model=baseline_model,
                  baseline_model_path=args.baseline_model,
-                 workers=args.workers)
+                 workers=args.workers,
+                 pgn_out=args.pgn_out)
 
 
 if __name__ == "__main__":
