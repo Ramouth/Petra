@@ -3,7 +3,7 @@
 #BSUB -n 8
 #BSUB -R "span[hosts=1] rusage[mem=4GB]"
 #BSUB -M 4GB
-#BSUB -W 8:00
+#BSUB -W 4:00
 #BSUB -J petra_r4_selfplay
 #BSUB -o /zhome/81/b/206091/Petra-Phase1/logs/lsf_r4_selfplay.log
 #BSUB -e /zhome/81/b/206091/Petra-Phase1/logs/lsf_r4_selfplay.err
