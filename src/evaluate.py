@@ -215,17 +215,20 @@ def _game_worker(args):
     Play one game in a subprocess. Each worker loads its own model copy.
     Returns "win", "loss", or "draw" from agent_a's perspective.
     """
-    game_idx, model_path, agent_a_cfg, agent_b_cfg, max_moves = args
+    game_idx, model_path, baseline_model_path, agent_a_cfg, agent_b_cfg, max_moves = args
 
-    model = None
-    if model_path:
-        model = PetraNet()
-        model.load_state_dict(
-            torch.load(model_path, map_location="cpu", weights_only=True)
-        )
-        model.eval()
+    def _load(path):
+        if not path:
+            return None
+        m = PetraNet()
+        m.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
+        m.eval()
+        return m
 
-    def _make(cfg):
+    model_a = _load(model_path)
+    model_b = _load(baseline_model_path) if baseline_model_path else model_a
+
+    def _make(cfg, model):
         t = cfg["type"]
         if t == "random":
             return RandomAgent(seed=cfg.get("seed"))
@@ -237,7 +240,7 @@ def _game_worker(args):
                              temperature_moves=cfg["temp_moves"])
         raise ValueError(f"Unknown agent type: {t}")
 
-    a, b = _make(agent_a_cfg), _make(agent_b_cfg)
+    a, b = _make(agent_a_cfg, model_a), _make(agent_b_cfg, model_b)
     white, black = (a, b) if game_idx % 2 == 0 else (b, a)
     result = play_game(white, black, max_moves=max_moves)
 
@@ -253,6 +256,7 @@ def run_match(agent_a: Agent, agent_b: Agent,
               n_games: int = 100,
               verbose: bool = True,
               model_path: str = None,
+              baseline_model_path: str = None,
               workers: int = 1,
               max_moves: int = 300) -> dict:
     """
@@ -270,7 +274,7 @@ def run_match(agent_a: Agent, agent_b: Agent,
     report_every = max(1, n_games // 10)
 
     args_list = [
-        (i, model_path, agent_a.cfg, agent_b.cfg, max_moves)
+        (i, model_path, baseline_model_path, agent_a.cfg, agent_b.cfg, max_moves)
         for i in range(n_games)
     ]
 
@@ -359,6 +363,8 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
                  steps: list = None, n_sim: int = 200,
                  temperature_moves: int = 10,
                  model_path: str = None,
+                 baseline_model: Optional[PetraNet] = None,
+                 baseline_model_path: str = None,
                  workers: int = 1):
     """
     Run the full ablation ladder or a subset of steps.
@@ -388,11 +394,17 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
         elif step == 5:
             a = MCTSAgent(model, n_simulations=n_sim, value="learned",
                           temperature_moves=temperature_moves)
-            b = MCTSAgent(model, n_simulations=n_sim, value="material",
-                          temperature_moves=temperature_moves)
+            if baseline_model is not None:
+                b = MCTSAgent(baseline_model, n_simulations=n_sim, value="learned",
+                              temperature_moves=temperature_moves)
+            else:
+                b = MCTSAgent(model, n_simulations=n_sim, value="material",
+                              temperature_moves=temperature_moves)
 
         results[step] = run_match(a, b, n_games=n_games,
-                                  model_path=model_path, workers=workers)
+                                  model_path=model_path,
+                                  baseline_model_path=baseline_model_path,
+                                  workers=workers)
 
     _print_ablation_summary(results)
     return results
@@ -436,8 +448,11 @@ def main():
     ap.add_argument("--temp-moves", type=int, default=10,
                     help="Half-moves at start of each game to use temperature=1 "
                          "(prevents deterministic game repetition; default: 10)")
-    ap.add_argument("--workers",    type=int, default=1,
+    ap.add_argument("--workers",        type=int, default=1,
                     help="Parallel worker processes for game playing (default: 1)")
+    ap.add_argument("--baseline-model", default=None,
+                    help="Path to baseline model .pt for head-to-head (step 5 only). "
+                         "If omitted, step 5 uses the material baseline.")
     args = ap.parse_args()
 
     model = None
@@ -451,12 +466,24 @@ def main():
         print("--model required for steps 2-5")
         sys.exit(1)
 
+    baseline_model = None
+    if args.baseline_model:
+        baseline_model = PetraNet().to(device)
+        baseline_model.load_state_dict(torch.load(args.baseline_model,
+                                                   map_location=device,
+                                                   weights_only=True))
+        baseline_model.eval()
+        print(f"Loaded baseline model from {args.baseline_model}")
+
     steps = list(ABLATION_STEPS.keys()) if args.all_steps else \
             [args.step] if args.step else [5]
 
     run_ablation(model, n_games=args.games, steps=steps, n_sim=args.n_sim,
                  temperature_moves=args.temp_moves,
-                 model_path=args.model, workers=args.workers)
+                 model_path=args.model,
+                 baseline_model=baseline_model,
+                 baseline_model_path=args.baseline_model,
+                 workers=args.workers)
 
 
 if __name__ == "__main__":
