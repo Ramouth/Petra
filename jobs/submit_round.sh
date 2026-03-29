@@ -95,6 +95,8 @@ else
     -q hpc \
     -n 1 \
     -W 1:00 \
+    -R "rusage[mem=4GB]" \
+    -M 4GB \
     -J "petra_r${ROUND}_reeval" \
     -w "done($JID_SELFPLAY)" \
     -o "$LOGS/lsf_r${ROUND}_reeval.log" \
@@ -123,6 +125,8 @@ else
     -q hpc \
     -n 1 \
     -W 4:00 \
+    -R "rusage[mem=4GB]" \
+    -M 4GB \
     -J "petra_r${ROUND}_train" \
     -w "done($JID_REEVAL)" \
     -o "$LOGS/lsf_r${ROUND}_train.log" \
@@ -148,7 +152,8 @@ else
   JID_GATE=$(bsub \
     -q hpc \
     -n 4 \
-    -R "span[hosts=1]" \
+    -R "span[hosts=1] rusage[mem=1GB]" \
+    -M 1GB \
     -W 4:00 \
     -J "petra_r${ROUND}_gate" \
     -w "done($JID_TRAIN)" \

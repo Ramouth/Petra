@@ -26,10 +26,12 @@ Usage
 -----
     python3 evaluate.py --model models/best.pt --games 100 --step 5
     python3 evaluate.py --model models/best.pt --games 200 --all-steps
+    python3 evaluate.py --model models/best.pt --games 100 --step 5 --workers 4
 """
 
 import argparse
 import math
+import multiprocessing as mp
 import os
 import random
 import sys
@@ -85,12 +87,17 @@ class Agent:
     def name(self) -> str:
         return self.__class__.__name__
 
+    @property
+    def cfg(self) -> dict:
+        raise NotImplementedError
+
 
 class RandomAgent(Agent):
     """Picks a random legal move. The floor."""
 
     def __init__(self, seed: int = None):
         self._rng = random.Random(seed)
+        self._seed = seed
 
     def select_move(self, board: chess.Board) -> chess.Move:
         return self._rng.choice(list(board.legal_moves))
@@ -98,6 +105,10 @@ class RandomAgent(Agent):
     @property
     def name(self):
         return "Random"
+
+    @property
+    def cfg(self):
+        return {"type": "random", "seed": self._seed}
 
 
 class GreedyAgent(Agent):
@@ -113,6 +124,10 @@ class GreedyAgent(Agent):
     @property
     def name(self):
         return "Greedy(policy)"
+
+    @property
+    def cfg(self):
+        return {"type": "greedy"}
 
 
 class MCTSAgent(Agent):
@@ -157,6 +172,11 @@ class MCTSAgent(Agent):
     def name(self):
         return f"MCTS(n={self._n}, value={self._val})"
 
+    @property
+    def cfg(self):
+        return {"type": "mcts", "value": self._val, "n_sim": self._n,
+                "temp_moves": self._temp_moves}
+
 
 # ---------------------------------------------------------------------------
 # Game runner
@@ -186,43 +206,98 @@ def play_game(white: Agent, black: Agent, max_moves: int = 300) -> str:
     return "1/2-1/2"
 
 
+# ---------------------------------------------------------------------------
+# Parallel game worker (module-level for picklability)
+# ---------------------------------------------------------------------------
+
+def _game_worker(args):
+    """
+    Play one game in a subprocess. Each worker loads its own model copy.
+    Returns "win", "loss", or "draw" from agent_a's perspective.
+    """
+    game_idx, model_path, agent_a_cfg, agent_b_cfg, max_moves = args
+
+    model = None
+    if model_path:
+        model = PetraNet()
+        model.load_state_dict(
+            torch.load(model_path, map_location="cpu", weights_only=True)
+        )
+        model.eval()
+
+    def _make(cfg):
+        t = cfg["type"]
+        if t == "random":
+            return RandomAgent(seed=cfg.get("seed"))
+        if t == "greedy":
+            return GreedyAgent(model)
+        if t == "mcts":
+            return MCTSAgent(model, n_simulations=cfg["n_sim"],
+                             value=cfg["value"],
+                             temperature_moves=cfg["temp_moves"])
+        raise ValueError(f"Unknown agent type: {t}")
+
+    a, b = _make(agent_a_cfg), _make(agent_b_cfg)
+    white, black = (a, b) if game_idx % 2 == 0 else (b, a)
+    result = play_game(white, black, max_moves=max_moves)
+
+    if result == "1/2-1/2":
+        return "draw"
+    a_is_white = (game_idx % 2 == 0)
+    if (result == "1-0") == a_is_white:
+        return "win"
+    return "loss"
+
+
 def run_match(agent_a: Agent, agent_b: Agent,
               n_games: int = 100,
-              verbose: bool = True) -> dict:
+              verbose: bool = True,
+              model_path: str = None,
+              workers: int = 1,
+              max_moves: int = 300) -> dict:
     """
     Play n_games between agent_a and agent_b, alternating colours every game.
     Returns a results dict with win/draw/loss counts and ELO estimates.
+
+    workers > 1: games are played in parallel subprocesses, each loading
+    their own model copy from model_path.
     """
     if n_games % 2 != 0:
         n_games += 1   # ensure equal colours
 
     wins = draws = losses = 0
     t0 = time.time()
+    report_every = max(1, n_games // 10)
 
-    for i in range(n_games):
-        # Alternate: even games A=White, odd games A=Black
-        if i % 2 == 0:
-            white, black = agent_a, agent_b
-        else:
-            white, black = agent_b, agent_a
+    args_list = [
+        (i, model_path, agent_a.cfg, agent_b.cfg, max_moves)
+        for i in range(n_games)
+    ]
 
-        result = play_game(white, black)
-
-        if result == "1/2-1/2":
+    def _record(outcome, i):
+        nonlocal wins, draws, losses
+        if outcome == "draw":
             draws += 1
-        elif (result == "1-0" and white is agent_a) or \
-             (result == "0-1" and black is agent_a):
+        elif outcome == "win":
             wins += 1
         else:
             losses += 1
-
-        if verbose and (i + 1) % max(1, n_games // 10) == 0:
+        if verbose and (i + 1) % report_every == 0:
             total = wins + draws + losses
             wr = (wins + 0.5 * draws) / total
-            elapsed = time.time() - t0
             print(f"  [{i+1:>4}/{n_games}]  "
                   f"W={wins} D={draws} L={losses}  "
-                  f"wr={wr:.3f}  ({elapsed:.0f}s)")
+                  f"wr={wr:.3f}  ({time.time()-t0:.0f}s)")
+
+    if workers > 1:
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=workers) as pool:
+            for i, outcome in enumerate(pool.imap(_game_worker, args_list)):
+                _record(outcome, i)
+    else:
+        for i, args in enumerate(args_list):
+            outcome = _game_worker(args)
+            _record(outcome, i)
 
     return _summarise(agent_a.name, agent_b.name, wins, draws, losses)
 
@@ -282,7 +357,9 @@ ABLATION_STEPS = {
 
 def run_ablation(model: Optional[PetraNet], n_games: int = 100,
                  steps: list = None, n_sim: int = 200,
-                 temperature_moves: int = 10):
+                 temperature_moves: int = 10,
+                 model_path: str = None,
+                 workers: int = 1):
     """
     Run the full ablation ladder or a subset of steps.
     model may be None for step 1 only.
@@ -314,7 +391,8 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
             b = MCTSAgent(model, n_simulations=n_sim, value="material",
                           temperature_moves=temperature_moves)
 
-        results[step] = run_match(a, b, n_games=n_games)
+        results[step] = run_match(a, b, n_games=n_games,
+                                  model_path=model_path, workers=workers)
 
     _print_ablation_summary(results)
     return results
@@ -358,6 +436,8 @@ def main():
     ap.add_argument("--temp-moves", type=int, default=10,
                     help="Half-moves at start of each game to use temperature=1 "
                          "(prevents deterministic game repetition; default: 10)")
+    ap.add_argument("--workers",    type=int, default=1,
+                    help="Parallel worker processes for game playing (default: 1)")
     args = ap.parse_args()
 
     model = None
@@ -375,7 +455,8 @@ def main():
             [args.step] if args.step else [5]
 
     run_ablation(model, n_games=args.games, steps=steps, n_sim=args.n_sim,
-                 temperature_moves=args.temp_moves)
+                 temperature_moves=args.temp_moves,
+                 model_path=args.model, workers=args.workers)
 
 
 if __name__ == "__main__":

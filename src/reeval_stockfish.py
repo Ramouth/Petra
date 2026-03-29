@@ -54,7 +54,7 @@ class Stockfish:
             [path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -70,7 +70,14 @@ class Stockfish:
     def _wait_for(self, token: str) -> list:
         lines = []
         while True:
-            line = self._proc.stdout.readline().strip()
+            line = self._proc.stdout.readline()
+            if not line:  # EOF — process died
+                stderr = self._proc.stderr.read()
+                raise RuntimeError(
+                    f"Stockfish process exited before sending {token!r}.\n"
+                    f"stderr: {stderr.strip() or '(empty)'}"
+                )
+            line = line.strip()
             lines.append(line)
             if token in line:
                 return lines
@@ -138,6 +145,11 @@ def reeval(dataset_path: str,
     all_tensors  = torch.cat([train_d["tensors"],  val_d["tensors"]],  dim=0)
     all_fens     = train_d["fens"] + val_d["fens"]
     all_moves    = torch.cat([train_d["move_idxs"], val_d["move_idxs"]], dim=0)
+
+    # Free the full loaded dataset (including visit_dists which we don't use)
+    # before starting the Stockfish loop — avoids holding 100MB+ during eval.
+    del data, train_d, val_d
+    import gc; gc.collect()
 
     total = len(all_fens)
     print(f"  Total positions: {total:,}")
