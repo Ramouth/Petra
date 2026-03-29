@@ -105,34 +105,122 @@ Full design document: 4-round curriculum, data strategy, policy loss change, tem
 
 ---
 
+## Sessions 4–6 — Zigzag R1–R4, Geometry Analysis (2026-03-27 to 2026-03-29)
+
+### Zigzag round results
+
+| Round | Win rate | Opponent | Notes |
+|-------|----------|----------|-------|
+| R1 | 54.5% | MCTS(material) | Marginal pass. SF labels, n_sim=40 |
+| R2 | 61.0% | MCTS(material) | Strong pass. SF labels, n_sim=80 |
+| R3 | 59.0% (45% vs R2) | MCTS(material) | Regression vs R2. Root cause: same data distribution, early stopping at epoch 1 |
+| R4 | 67.0% | MCTS(material) | Strong. 200 games, n_sim=400, init from R2. Deeper search hypothesis confirmed |
+
+R4 change: reset to R2 weights + deeper MCTS. Gate improved significantly. The gain is from search depth, not from geometry improvement.
+
+### PGN analysis (R3 and R4 gates)
+- 25–29% of games hit the 300-move limit — not bare king shuffles but complex endgames
+- Type A (5/25): queen vs bare king, model can't deliver checkmate (geometry failure)
+- Type B (20/25): R+P vs R+P, Q+B vs Q+B — some theoretical draws, some conversion failures
+- Conclusion: Petra plays real chess. The failure mode is endgame conversion, not structural chaos.
+
+### Geometry probe — critical finding (2026-03-29)
+
+Ran `compare_geometry.py` across R1, R2, R4 using `selfplay_r1_full_sf.pt` as fixed reference.
+
+| Metric | R1 | R2 | R4 |
+|--------|----|----|-----|
+| Top-1 eigenvalue (%) | 21.5 | 21.7 | 21.5 |
+| Centroid cosine sim | 0.883 | 0.871 | 0.869 |
+| Separation gap | 0.050 | 0.057 | 0.048 |
+| NN consistency | 0.912 | 0.903 | 0.902 |
+| Mean vec norm | 92.4 | 90.2 | 87.8 |
+| KQ vs K (White) | ✓ | ✓ | ✗ FAIL |
+| K vs KQ (Black) | ✗ FAIL | ✗ FAIL | ✗ FAIL |
+
+**The encoder is frozen.** SF labels do not improve geometry across rounds. ELO gains come from deeper MCTS search, not better representation. K vs KQ (White bare king = losing) has never been classified correctly in any round — a systemic bias.
+
+### Architectural root cause: ReLU in the bottleneck
+
+The bottleneck is `Linear(4096→128) + ReLU`. ReLU forces all geometry values ≥ 0. Consequence:
+- 57% of geometry values exactly zero
+- 26 of 128 dimensions permanently dead (never activate on any position)
+- Only ~27 dimensions distinguish win from loss
+- Win centroid mean activation (2.80) ≈ loss centroid mean activation (2.83)
+- Win/loss centroids cannot be antipodal — both live in the positive orthant
+
+The value head compensates by memorising SF outputs on top of a crippled representation. The geometry hypothesis has never been properly testable with this architecture.
+
+**Fix:** Replace `ReLU` with `Tanh` in the bottleneck. Done in this session (model.py). Tanh allows negative values → win/loss can occupy opposite sides of the origin → all 128 dimensions become usable.
+
+---
+
+## R5–R7 Plan (2026-03-29)
+
+### R5 — Outcome labels, current architecture (submitted 2026-03-29)
+- 500 games, n_sim=400, init from R4, no SF reeval — outcome labels (+1/-1/-0.1) directly
+- Answers: do outcome labels improve geometry within the ReLU constraint?
+- Expected: marginal improvement at best. ReLU cap is still in place.
+- Scripts: `jobs/r5_selfplay.sh`, `r5_train.sh`, `r5_gate.sh`
+
+### R6 — Tanh bottleneck, retrain from scratch (next after R5 results)
+- One architectural change: `nn.ReLU()` → `nn.Tanh()` in bottleneck (done)
+- Retrain from scratch — do NOT init from R4/R5. ReLU weights are geometrically wrong for Tanh.
+- Outcome labels as primary signal
+- Success criteria:
+  - KQ vs K AND K vs KQ both classify correctly
+  - Centroid cosine sim < 0.80
+  - Separation gap > 0.057 (exceeds R2 peak)
+  - Dead dimensions < 5/128
+
+If R6 passes: the geometry hypothesis is alive. If R6 fails with Tanh: the CNN backbone itself may not be encoding material asymmetry in a geometry-compatible way — deeper architectural question.
+
+### R7 — Geometric MCTS (only if R6 proves antipodal geometry)
+Moves as trajectories in geometry space. Per-move MCTS bonus:
+
+```
+score(move) = value(board_after) + λ · Δg · (c_win − c_loss)
+```
+
+`Δg = geometry(board_after) − geometry(board_before)` projected onto the win-loss axis.
+This gives MCTS a dense gradient at every node, not just leaf-node evaluation.
+λ is tunable — start at 0.1.
+
+### Hard decision after R7
+After R7 we have enough signal to decide: does the geometry hypothesis hold at this scale? If yes, the path to GPU is justified (batched MCTS, larger model). If no, we reconsider the architecture more fundamentally (contrastive loss on the bottleneck, larger bottleneck, sequence model for position history). No premature commitment.
+
+---
+
 ## Next
 
-1. Gate result for round 1 → if pass, run full 500-game round 1 on HPC with workers
-2. Set up LSF job scripts for HPC submission
-3. Push latest commits (offline during session 3)
+1. R5 results → run `compare_geometry.py` — does KQ vs K pass? Does separation gap move?
+2. R6 scripts (Tanh, scratch training, outcome labels)
+3. After R7: hard go/no-go on geometry hypothesis
 
 ---
 
 ## Milestones
 
 ### ELO
-- [ ] Beat MCTS(material) at >55% — *round 1 gate* ← here now
-- [ ] Beat MCTS(material) at >60% — *consistent edge*
-- [ ] Beat MCTS(material) at >70% — *dominant*
+- [x] Beat MCTS(material) at >55% — *R2: 61%*
+- [x] Beat MCTS(material) at >60% — *R2: 61%, R4: 67%*
+- [ ] Beat MCTS(material) at >70% — *R4: 67%, close*
 - [ ] Beat Stockfish depth 1
 - [ ] Beat Stockfish depth 5
 
 ### Geometry (the thesis)
-- [ ] Win/loss centroid cosine < 0.85 — *currently 0.919*
-- [ ] Win/loss centroid cosine < 0.70 — *strong separation*
-- [ ] Separation gap > 0.15 — *currently 0.04*
+- [x] Win/loss centroid cosine < 0.85 — *R4: 0.869*
+- [ ] Win/loss centroid cosine < 0.70 — *target for R6*
+- [ ] Separation gap > 0.10 — *currently 0.048–0.057*
+- [ ] KQ vs K AND K vs KQ both correct — *K vs KQ never correct, any round*
+- [ ] Dead dimensions < 5/128 — *currently 26/128*
 
 ### Self-play
-- [ ] 1k self-play positions trained — *prototype round 1 ← here now*
-- [ ] 10k self-play positions — *full HPC round 1*
-- [ ] 100k self-play positions — *rounds 2–3*
-- [ ] 1M MCTS simulations — *round 1 full run*
-- [ ] 10M MCTS simulations — *rounds 2–4*
+- [x] 1k self-play positions trained
+- [x] 10k self-play positions — *R1 full run*
+- [x] 100k self-play positions — *R2–R4*
+- [x] 1M MCTS simulations — *R4: n_sim=400 × 200 games*
+- [ ] 10M MCTS simulations — *GPU territory*
 
 ---
 

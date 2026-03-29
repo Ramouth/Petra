@@ -7,7 +7,7 @@ Input:       (B, 14, 8, 8)
 ConvBlock:   14 → 64 channels, 3×3
 ResBlocks:   64 channels × N_BLOCKS (default 4), each with skip connection
 Flatten:     64 × 8 × 8 = 4096
-Bottleneck:  Linear(4096 → 128) + ReLU   ← geometry space
+Bottleneck:  Linear(4096 → 128) + Tanh   ← geometry space
 
 Value head:  Linear(128 → 64) + ReLU + Linear(64 → 1) + Tanh
 Policy head: Linear(128 → 4096)  [logits over all 64×64 from/to pairs]
@@ -67,7 +67,7 @@ class PetraNet(nn.Module):
         self.bottleneck = nn.Sequential(
             nn.Flatten(),
             nn.Linear(channels * 8 * 8, bottleneck_dim),
-            nn.ReLU(),
+            nn.Tanh(),
         )
 
         self.value_head = nn.Sequential(
