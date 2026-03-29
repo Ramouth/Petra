@@ -130,7 +130,7 @@ def probe_round(model_path: str, dataset_path: str, n: int = 2000) -> dict:
 def _label_class(v: float) -> str:
     if abs(v - 1.0)  < 1e-4: return "win"
     if abs(v + 1.0)  < 1e-4: return "loss"
-    if abs(v + 0.1)  < 1e-4: return "draw"
+    if abs(abs(v) - 0.1) < 1e-4: return "draw"   # catches ±0.1 after perspective flip
     return "invalid"
 
 
