@@ -191,6 +191,62 @@ After R7 we have enough signal to decide: does the geometry hypothesis hold at t
 
 ---
 
+## Alternative Path — Geometry From First Principles (2026-03-30)
+
+Identified during R6 analysis as a parallel direction, independent of whether R6/R7 succeed.
+
+### The passenger problem
+
+The geometry is currently shaped entirely by backprop through the value and policy heads. If the value head can produce correct scalar outputs without the geometry being meaningful, it will — and it does (R4: KQ vs K passes sanity check, fails geometry probe). The loss function contains no term that enforces antipodal structure. MCTS never touches the geometry directly. The geometry is a passenger: it goes along for the ride and occasionally picks up structure, but nothing forces it to be the driver of good play.
+
+Making geometry a driver requires changing what it is optimised *for*, not just its activation function.
+
+### The compute reality
+
+We are not Google. Full-game self-play at scale requires GPU. The geometry hypothesis does not. Endgames are fully enumerable on CPU in minutes. The cheapest possible test of the geometry hypothesis is also the most principled one.
+
+### Endgame-to-opening geometry curriculum
+
+Endgames are the only part of chess where labels are unambiguous and positions are enumerable:
+
+- **KQ vs K**: ~150k legal positions. All are either forced mate or stalemate. Label with Stockfish in minutes — perfect supervision. The geometry *must* be antipodal here or the model is simply wrong. No value head compensation is possible against a perfectly clean signal.
+- **KR vs K**: similar scale, similar clarity.
+- **K+P vs K**: slightly more complex, still tractable.
+- **Pawnless midgame → full midgame → openings**: each step adds geometric complexity on top of a foundation that is already geometrically anchored.
+
+This directly addresses the passenger problem. At each stage, the geometry has no noise to hide behind. Win/loss centroids are forced apart by the training signal, not hoped to emerge as a side effect.
+
+The additional benefit: endgame geometry is the *ground truth* of chess value. A model that understands endgame geometry correctly has the right foundation for middlegame evaluation. Building openings on top of that is reasonable. Building endgame evaluation on top of opening intuition (the current approach) is backwards.
+
+### Simplified chess for hypothesis testing
+
+Before committing HPC resources to full-chess geometry experiments, test the geometry MCTS hypothesis on a toy domain where everything is verifiable:
+
+- **4×4 or 5×5 board**, two kings and a small piece set (e.g., queen + pawns)
+- Fully enumerable game tree — perfect labels, no Stockfish needed
+- Self-play runs in minutes on a laptop
+- Geometry is checkable against known perfect play
+
+If geometry-based MCTS does not outperform standard MCTS on this toy problem, the hypothesis needs rethinking before scaling. If it does, you have proof of concept at negligible compute cost.
+
+This is the Phase 0 lesson applied correctly: test the hypothesis in the cheapest possible domain, build infrastructure only after the idea is validated.
+
+### Geometry transition function
+
+For geometry MCTS to work beyond depth-1 (single legal move → geometry), a transition function is needed: given geometry g and move m, predict g' without a full board forward pass. This is a supervised learning problem once the geometry space is stable:
+
+```
+f(g_t, move) → g_{t+1}
+```
+
+Training data comes for free from every self-play game — you have the geometry at every position and every move played. The transition function is what enables planning in geometry space without expanding the full board tree. Legal move generation remains board-grounded; everything else is geometry.
+
+### Relationship to R6/R7
+
+R6 and R7 continue as planned — they test whether the Tanh fix is sufficient within the current full-game training approach. This alternative path runs in parallel as a lower-compute, higher-confidence route to validating the geometry hypothesis. The two paths converge if R6/R7 succeed: full-game training with geometry-aware MCTS. If R6/R7 fail, the endgame-first path is the fallback that doesn't require starting over entirely.
+
+---
+
 ## Session 7 — R6 Tanh Bootstrap (2026-03-30)
 
 ### Context
