@@ -22,11 +22,17 @@ Ablation ladder (run in order after supervised pretraining):
              Does the trained value head add over material?
              This is the critical gate. If no: stop. If yes: proceed to self-play.
 
+  Step 6 — MCTSAgent(value=geometry) vs MCTSAgent(value=material)
+             Does geometry-only evaluation (no value head) add over material?
+             Tests whether the bottleneck encodes directional signal independently
+             of the value head. Useful for diagnosing the passenger problem.
+
 Usage
 -----
     python3 evaluate.py --model models/best.pt --games 100 --step 5
     python3 evaluate.py --model models/best.pt --games 200 --all-steps
     python3 evaluate.py --model models/best.pt --games 100 --step 5 --workers 4
+    python3 evaluate.py --model models/best.pt --games 100 --step 6
 """
 
 import argparse
@@ -41,11 +47,13 @@ from typing import Callable, Optional
 import chess
 import chess.pgn
 import io
+import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import PetraNet
 from mcts import MCTS
+from board import board_to_tensor
 from config import device
 
 
@@ -75,6 +83,51 @@ def material_value(board: chess.Board) -> float:
 def zero_value(board: chess.Board) -> float:
     """Always returns 0 — search guided by policy only."""
     return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Geometry value function
+# ---------------------------------------------------------------------------
+
+_GEOMETRY_ANCHORS_WIN = [
+    chess.Board("4k3/8/8/8/8/8/8/4K2Q w - - 0 1"),
+    chess.Board("4k3/8/8/2Q5/8/8/8/4K3 w - - 0 1"),
+    chess.Board("8/8/8/8/3k4/8/8/3K2Q1 w - - 0 1"),
+    chess.Board("8/8/8/8/8/2k5/8/3K2Q1 w - - 0 1"),
+]
+_GEOMETRY_ANCHORS_LOSS = [
+    chess.Board("4K3/8/8/8/8/8/8/4k2q w - - 0 1"),
+    chess.Board("4K3/8/8/2q5/8/8/8/4k3 w - - 0 1"),
+    chess.Board("8/8/8/8/3K4/8/8/3k2q1 w - - 0 1"),
+    chess.Board("8/8/8/8/8/2K5/8/3k2q1 w - - 0 1"),
+]
+
+
+def _geo_vec(model: PetraNet, board: chess.Board) -> np.ndarray:
+    dev = next(model.parameters()).device
+    t = board_to_tensor(board).unsqueeze(0).float().to(dev)
+    return model.geometry(t).cpu().numpy()[0]
+
+
+def make_geometry_value_fn(model: PetraNet) -> Callable:
+    """
+    Build a value function that uses the geometry projection onto the
+    win/loss axis derived from KQ vs K anchor positions.
+
+    Returns a callable: board -> float in roughly (-1, +1).
+    The geometry drives the evaluation — the value head is not used.
+    """
+    c_win  = np.mean([_geo_vec(model, b) for b in _GEOMETRY_ANCHORS_WIN],  axis=0)
+    c_loss = np.mean([_geo_vec(model, b) for b in _GEOMETRY_ANCHORS_LOSS], axis=0)
+    axis   = c_win - c_loss
+    axis   = axis / (np.linalg.norm(axis) + 1e-8)
+
+    def geometry_value(board: chess.Board) -> float:
+        g = _geo_vec(model, board)
+        proj = float(np.dot(g, axis))
+        return math.tanh(proj)
+
+    return geometry_value
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +201,13 @@ class MCTSAgent(Agent):
 
     def __init__(self, model: PetraNet, n_simulations: int = 200,
                  value: str = "learned", temperature_moves: int = 10):
-        assert value in ("learned", "material", "zero")
+        assert value in ("learned", "material", "zero", "geometry")
         if value == "material":
             value_fn = material_value
         elif value == "zero":
             value_fn = zero_value
+        elif value == "geometry":
+            value_fn = make_geometry_value_fn(model)
         else:
             value_fn = None   # MCTS defaults to model.value()
 
@@ -394,6 +449,7 @@ ABLATION_STEPS = {
     3: ("Search + zero value",   "MCTS(zero) vs Greedy"),
     4: ("Material value",        "MCTS(material) vs Greedy"),
     5: ("Learned value (gate)",  "MCTS(learned) vs MCTS(material)"),
+    6: ("Geometry value",        "MCTS(geometry) vs MCTS(material)"),
 }
 
 def run_ablation(model: Optional[PetraNet], n_games: int = 100,
@@ -438,6 +494,11 @@ def run_ablation(model: Optional[PetraNet], n_games: int = 100,
             else:
                 b = MCTSAgent(model, n_simulations=n_sim, value="material",
                               temperature_moves=temperature_moves)
+        elif step == 6:
+            a = MCTSAgent(model, n_simulations=n_sim, value="geometry",
+                          temperature_moves=temperature_moves)
+            b = MCTSAgent(model, n_simulations=n_sim, value="material",
+                          temperature_moves=temperature_moves)
 
         results[step] = run_match(a, b, n_games=n_games,
                                   model_path=model_path,
@@ -468,6 +529,14 @@ def _print_ablation_summary(results: dict):
         else:
             print("\nGATE FAILED — learned value does not beat material.")
             print("Do not proceed to self-play. Review training data and model.")
+    if 6 in results:
+        geo_result = results[6]
+        if geo_result["win_rate"] > 0.52:
+            print("\nGEOMETRY SIGNAL — geometry evaluation beats material.")
+            print("Bottleneck encodes directional signal independently of the value head.")
+        else:
+            print("\nGEOMETRY FLAT — geometry evaluation does not beat material.")
+            print("Passenger problem likely: geometry is not directionally structured.")
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +548,7 @@ def main():
     ap.add_argument("--model",      default=None, help="Path to model .pt file")
     ap.add_argument("--games",      type=int, default=100)
     ap.add_argument("--step",       type=int, default=None,
-                    help="Run a single ablation step (1-5)")
+                    help="Run a single ablation step (1-6)")
     ap.add_argument("--all-steps",  action="store_true",
                     help="Run all ablation steps in order")
     ap.add_argument("--n-sim",      type=int, default=200,
@@ -504,7 +573,7 @@ def main():
         model.eval()
         print(f"Loaded model from {args.model}")
     elif args.step != 1:
-        print("--model required for steps 2-5")
+        print("--model required for steps 2-6")
         sys.exit(1)
 
     baseline_model = None
