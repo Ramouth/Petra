@@ -191,11 +191,67 @@ After R7 we have enough signal to decide: does the geometry hypothesis hold at t
 
 ---
 
+## Session 7 — R6 Tanh Bootstrap (2026-03-30)
+
+### Context
+
+R5 selfplay completed (500 games, n_sim=400) but gate results were inconclusive or a regression — R4 remains the best confirmed model. R6 proceeds as planned: Tanh bottleneck, cold start, SF-labeled R5 data as bootstrap signal.
+
+### R6 pipeline deviations from plan
+
+The R6 plan called for outcome labels as primary signal. In practice, R6 uses SF-labeled R5 selfplay data (`selfplay_r6_sf.pt`) for the bootstrap step. This is a deliberate choice: a cold-start model needs accurate labels to orient the geometry — outcome labels on a random initialisation produce too much noise to establish the win/loss axis. SF labels at depth 20 give sharper signal for the bootstrap.
+
+### Dataset concern
+
+The R5 selfplay dataset had only **5,782 positions** (12 positions/game cap × 500 games ≈ 6k). ZIGZAG.md assumes ~30k per round. This is a known design mismatch — `MAX_POSITIONS_PER_GAME = 12` in selfplay.py was never revisited after the Lichess pretraining convention was carried over. R6 bootstrap and R6 selfplay are both operating at ~6k positions. For R7: increase `MAX_POSITIONS_PER_GAME` to 50 and reduce reeval depth to 15 (currently 2.8s/pos at depth 20 → ~18h for 23k positions; depth 15 brings it to ~4h).
+
+### Reeval
+
+SF depth 20 on 5,782 positions took **~4.5h** on a slow node. Three runs required — first two were wall-time kills (3h limit), third succeeded with 5h wall.
+
+Label distribution: mean=+0.091, std=0.821, **85% decisive**. The high decisive rate reflects that R5 selfplay games played through to clear outcomes — late-game positions dominate. This is a harder distribution to train on than the Lichess bootstrap (std=0.565, 43% decisive).
+
+### Bootstrap training
+
+Trained from scratch on 5,493/289 train/val split. Early stopped at epoch 12, best at epoch 7. Val loss bottomed at 7.14 — training diverged after that, classic overfitting on a tiny dataset. Total training time: **126 seconds**.
+
+Post-training sanity checks:
+
+```
+✓ White up queen          value=+0.932  (correct)
+✗ Black up queen          value=+0.667  (wrong sign — expected negative)
+✓ KQ vs K, White to move  value=+0.850  (correct)
+✓ KQ vs K, Black to move  value=-0.478  (correct)
+```
+
+R4 also passed KQ vs K Black (-0.909) and Black up queen (-0.918) — all four checks clean. R6 is actually *worse* on the sanity checks than R4: it fails Black up queen where R4 didn't. The R4 geometry probe showed K vs KQ as ✗ FAIL at the representation level, but the value head compensated to give the correct sign. R6 hasn't yet learned to compensate.
+
+The "Black up queen" failure root cause: the value head contains a `ReLU` between its two linear layers. ReLU breaks antisymmetry: `ReLU(-x) ≠ -ReLU(x)`. The KQ vs K check passes because the position is extreme enough to overcome this bias; the "Black up queen" check is more ambiguous and the ReLU asymmetry dominates. R4 avoided this because its weights were inherited from R2 — the accumulated learning gave the value head a better prior. R6 cold-start has not yet developed that compensation.
+
+Fix identified for R7: replace `ReLU` with `Tanh` in the value head. One-line change in model.py. Deferred until R6 gate confirms the Tanh bottleneck is producing useful signal.
+
+### Gate expectations
+
+R6 is gated against R4. The comparison is asymmetric — R4 was fine-tuned from R2 over multiple rounds; R6 is a cold start on 5,782 positions. The gate threshold for advancing is not a clean win — any signal above 50% (even marginal) on 100 games confirms the Tanh architecture can orient itself from scratch. Clear improvement (>55%) would justify the full R7 treatment: larger dataset, depth 15 reeval, value head fix.
+
+Gate results pending (scheduled for Tue Mar 31 ~04:00–08:00).
+
+### R6 geometry probe
+
+To run after gate: `compare_geometry.py` with R6 vs R2/R4 on `selfplay_r1_full_sf.pt`. Primary metrics to watch:
+- Centroid cosine sim — target < 0.80 (vs R4: 0.869)
+- Separation gap — target > 0.057 (vs R4: 0.048, R2 peak: 0.057)
+- Dead dimensions — target < 5/128 (vs R4: 26/128)
+- KQ vs K + K vs KQ both correct — partial pass already (K vs KQ now works)
+
+---
+
 ## Next
 
-1. R5 results → run `compare_geometry.py` — does KQ vs K pass? Does separation gap move?
-2. R6 scripts (Tanh, scratch training, outcome labels)
-3. After R7: hard go/no-go on geometry hypothesis
+1. R6 gate results (Tue Mar 31 morning)
+2. R6 geometry probe — does Tanh bottleneck move the separation gap?
+3. If signal present: R7 with value head fix + larger dataset
+4. After R7: hard go/no-go on geometry hypothesis
 
 ---
 
