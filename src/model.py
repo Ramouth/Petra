@@ -9,7 +9,7 @@ ResBlocks:   64 channels × N_BLOCKS (default 4), each with skip connection
 Flatten:     64 × 8 × 8 = 4096
 Bottleneck:  Linear(4096 → 128) + Tanh   ← geometry space
 
-Value head:  Linear(128 → 64) + ReLU + Linear(64 → 1) + Tanh
+Value head:  Linear(128 → 64) + Tanh + Linear(64 → 1) + Tanh
 Policy head: Linear(128 → 4096)  [logits over all 64×64 from/to pairs]
 
 The bottleneck is the only path from board to decisions. Everything Petra
@@ -72,7 +72,7 @@ class PetraNet(nn.Module):
 
         self.value_head = nn.Sequential(
             nn.Linear(bottleneck_dim, 64),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(64, 1),
             nn.Tanh(),
         )

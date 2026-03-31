@@ -24,7 +24,7 @@ echo "--- Training with antipodal loss ---"
   --epochs 50 \
   --patience 10 \
   --lr 1e-3 \
-  --antipodal-weight 0.1 \
+  --antipodal-weight 1.0 \
   --antipodal-margin 0.0 \
   --policy-weight 0.0
 
