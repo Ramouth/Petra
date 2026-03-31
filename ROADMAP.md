@@ -318,12 +318,67 @@ To run after gate: `compare_geometry.py` with R6 vs R2/R4 on `selfplay_r1_full_s
 
 ---
 
+---
+
+## Session 8 — Endgame Geometry Curriculum, Stage 1 (2026-03-31)
+
+### Pivot from R7
+
+R6 gate result: **58% decisive** selfplay (not gate score — selfplay completed but gate evaluation was inconclusive due to wall-time issues on HPC). R4 remains the best confirmed playing model. R7 full-game selfplay superseded by endgame-first curriculum as the primary geometry path. The geometry hypothesis is not dead — it needs a cleaner signal, not more of the same.
+
+### Value head ReLU fix (critical)
+
+Discovered during Stage 1 run 1: the value head contained `nn.ReLU()` between its two linear layers. ReLU breaks antisymmetry — `ReLU(-x) ≠ -ReLU(x)`. On a cold-start model, this forced the output to ~+0.75 regardless of input. Geometry collapsed (centroid cosine 0.9968, all vectors pointing the same direction).
+
+**Fix:** `nn.ReLU()` → `nn.Tanh()` in value head (model.py). One line.
+
+This was compounded by antipodal weight 0.1 being too low for the first run — value loss dominated and geometry never had to separate. Both fixes applied for run 2: weight 1.0 + Tanh value head.
+
+### Stage 1 results — KQ vs K, antipodal weight 1.0
+
+Run 2 (after both fixes):
+
+- **Phase transition at epoch 8**: val loss dropped >50% in a single epoch. Value loss and antipodal loss collapsed simultaneously from 0.8→0.4 and 0.5→0.2. This is the saddle-point escape the architecture was designed to achieve.
+- **Centroid cosine: 0.1753** (was 0.9968 run 1, 0.981 R4 baseline). This is the first time win/loss geometry has meaningfully separated.
+- **Forced mate convergence: PASS** — geometry correctly identifies forced-mate positions.
+- **Color flip symmetry: confirmed** — antipodal structure present.
+
+ROADMAP geometry milestone: *Win/loss centroid cosine < 0.70* — **CLEARED** (0.1753 far exceeds target).
+
+### Architecture at Stage 1
+
+- Bottleneck: `Linear(4096→128) + Tanh` — Tanh allows full ±1 range, no dead dimensions
+- Value head: `Linear(128→64) + Tanh + Linear(64→1) + Tanh` — antisymmetric by construction
+- Antipodal loss: weight=1.0, margin=0.0, min_norm=0.5
+- Policy weight: 0.0 — no policy loss during endgame curriculum
+- Training: 80 epochs max, patience=15, tight patience=3 after phase transition
+- Per-epoch dataset regeneration: 10k positions + 10k mirrors regenerated fresh each epoch (prevents memorisation)
+
+### Infrastructure built this session
+
+- `src/generate_endgame.py`: KQ vs K + KR vs K random position generator, antipodal mirror pairs, rule-based labels (no SF needed for KQK or KRK)
+- `src/board.py`: `flip_board_tensor()` — color-flip (14,8,8) tensor without chess.Board
+- `src/train.py`: per-epoch dataset regeneration, phase transition detection, adaptive tight patience, `--endgame-positions`, `--endgame-stage`, `--tight-patience`, `--transition-drop` CLI flags
+- `jobs/stage1_geometry.sh`: updated to per-epoch regeneration, no separate generate step
+- `jobs/stage2_geometry.sh`: KR vs K, inits from Stage 1 best.pt
+- `evaluate.py step 6`: MCTS(geometry) vs MCTS(material) — pending results
+
+### Current state
+
+Stage 1 model: `models/geometry/stage1/best.pt`
+
+Step 6 evaluation (100 games, geometry MCTS vs material MCTS) running/pending — this is the first test of whether the geometry actually steers play, not just separates in probe space.
+
+Stage 2 will run once HPC is back. Stage 2 uses random KRK positions + antipodal loss (same structure as Stage 1), initiating from Stage 1 weights. **Important caveat:** random positions + antipodal loss trains geometry to *separate*. Geometry as a play driver requires selfplay with geometry MCTS. That loop becomes available once step 6 results confirm geometry MCTS is viable.
+
+**GPU trigger:** 3 stages of geometry improvement → plan GPU migration for batched MCTS + larger model.
+
 ## Next
 
-1. R6 gate results (Tue Mar 31 morning)
-2. R6 geometry probe — does Tanh bottleneck move the separation gap?
-3. If signal present: R7 with value head fix + larger dataset
-4. After R7: hard go/no-go on geometry hypothesis
+1. Step 6 eval results — does geometry MCTS beat material MCTS on Stage 1 model?
+2. Submit Stage 2 (KR vs K) on HPC when back up
+3. If Stage 2 centroid cosine < 0.4: begin geometry MCTS selfplay loop for Stage 3+
+4. After 3 stages confirmed: GPU migration plan
 
 ---
 
@@ -338,10 +393,14 @@ To run after gate: `compare_geometry.py` with R6 vs R2/R4 on `selfplay_r1_full_s
 
 ### Geometry (the thesis)
 - [x] Win/loss centroid cosine < 0.85 — *R4: 0.869*
-- [ ] Win/loss centroid cosine < 0.70 — *target for R6*
-- [ ] Separation gap > 0.10 — *currently 0.048–0.057*
-- [ ] KQ vs K AND K vs KQ both correct — *K vs KQ never correct, any round*
-- [ ] Dead dimensions < 5/128 — *currently 26/128*
+- [x] Win/loss centroid cosine < 0.70 — *Stage 1: 0.1753*
+- [x] Win/loss centroid cosine < 0.50 — *Stage 1: 0.1753*
+- [x] Phase transition detected (saddle escape) — *Stage 1 epoch 8*
+- [x] Forced mate convergence — *Stage 1 PASS*
+- [ ] Separation gap > 0.10 — *currently 0.048–0.057 (R-rounds); Stage 1 not yet measured*
+- [ ] KQ vs K AND K vs KQ both correct — *K vs KQ never correct in R-rounds; Stage 1 pending full probe*
+- [ ] Dead dimensions < 5/128 — *R-rounds: 26/128; Stage 1 Tanh removes dead dim problem structurally*
+- [ ] Geometry MCTS beats material MCTS — *step 6 eval pending*
 
 ### Self-play
 - [x] 1k self-play positions trained

@@ -15,6 +15,7 @@ echo "=== Stage 2: KR vs K geometry curriculum ==="
 echo "--- Training with antipodal loss (per-epoch position regeneration) ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/train.py \
   --out models/geometry/stage2 \
+  --init-model models/geometry/stage1/best.pt \
   --epochs 80 \
   --patience 15 \
   --tight-patience 3 \
