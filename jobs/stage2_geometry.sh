@@ -10,11 +10,11 @@
 
 cd /zhome/81/b/206091/Petra-Phase1
 
-echo "=== Stage 2: mixed endgame curriculum (stages 1-5) ==="
-# Stages 1-3: single-piece endgames (KQK, KRK, KPK) — who has piece wins
-# Stages 4-5: mixed-material endgames (KQvKR, KRvKP) — stronger piece wins
-# Mixed material forces the model to learn piece value ordering, not just
-# "who has any piece". No --init-model: fresh start with per-piece architecture.
+echo "=== Stage 2: mixed endgame curriculum (stages 1-8) ==="
+# 1: KQK   2: KRK   3: KPK        — who has piece wins
+# 4: KQvKR 5: KRvKP               — stronger piece wins (fixes Q>R ordering)
+# 6: KBvKP 7: KNvKP               — minor piece beats pawn (fixes B>P, N>P)
+# 8: KPvKP balanced               — advancement heuristic (pawn structure geometry)
 /zhome/81/b/206091/petra-env/bin/python3 src/train.py \
   --out models/geometry/stage2 \
   --epochs 80 \
@@ -25,8 +25,8 @@ echo "=== Stage 2: mixed endgame curriculum (stages 1-5) ==="
   --antipodal-weight 1.0 \
   --antipodal-margin 0.0 \
   --policy-weight 0.0 \
-  --endgame-positions 15000 \
-  --endgame-stages 1 2 3 4 5
+  --endgame-positions 16000 \
+  --endgame-stages 1 2 3 4 5 6 7 8
 
 echo "--- Geometry probe ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/test_geometry.py \

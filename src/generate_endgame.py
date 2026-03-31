@@ -186,6 +186,55 @@ def random_4piece_position(white_piece: int, black_piece: int,
         return board
 
 
+def random_kp_kp_position(white_more_advanced: bool = True):
+    """
+    KP vs KP: balanced pawns, both sides have a pawn.
+    Label by pawn advancement — whichever pawn is closer to promotion wins.
+    Skips positions where both pawns are equally advanced.
+
+    white_more_advanced=True  → white pawn further along → label +1
+    white_more_advanced=False → black pawn further along → label -1
+    """
+    pawn_ranks = list(range(1, 7))
+
+    while True:
+        wp_sq = random.choice([sq for sq in range(64) if chess.square_rank(sq) in pawn_ranks])
+        bp_sq = random.choice([sq for sq in range(64) if chess.square_rank(sq) in pawn_ranks])
+        if wp_sq == bp_sq:
+            continue
+
+        # white advancement: higher rank = closer to promotion (rank 6 = 7th rank)
+        # black advancement: lower rank = closer to promotion (rank 1 = 2nd rank from black's view)
+        white_adv = chess.square_rank(wp_sq)
+        black_adv = 7 - chess.square_rank(bp_sq)
+
+        if white_adv == black_adv:
+            continue  # skip equal — label would be ambiguous
+
+        if white_more_advanced and white_adv <= black_adv:
+            continue
+        if not white_more_advanced and black_adv <= white_adv:
+            continue
+
+        remaining = [sq for sq in range(64) if sq not in (wp_sq, bp_sq)]
+        wk_sq, bk_sq = random.sample(remaining, 2)
+
+        board = chess.Board(fen=None)
+        board.clear()
+        board.set_piece_at(wk_sq, chess.Piece(chess.KING, chess.WHITE))
+        board.set_piece_at(wp_sq, chess.Piece(chess.PAWN, chess.WHITE))
+        board.set_piece_at(bk_sq, chess.Piece(chess.KING, chess.BLACK))
+        board.set_piece_at(bp_sq, chess.Piece(chess.PAWN, chess.BLACK))
+        board.turn = chess.WHITE
+
+        if not board.is_valid():
+            continue
+        if board.is_game_over():
+            continue
+
+        return board
+
+
 _PAWN_RANKS = list(range(1, 7))  # ranks 2-7 (0-indexed 1-6)
 
 _STAGE_GENERATORS = {
@@ -196,13 +245,25 @@ _STAGE_GENERATORS = {
         lambda: random_krk_position(white_has_rook=False)),
     3: (lambda: random_kpk_position(white_has_pawn=True),
         lambda: random_kpk_position(white_has_pawn=False)),
-    # Mixed-material endgames — stronger piece wins, forces piece value ordering
-    4: (lambda: random_4piece_position(chess.QUEEN, chess.ROOK),    # KQ vs KR: queen wins
-        lambda: random_4piece_position(chess.ROOK,  chess.QUEEN)),  # mirror: rook side = -1
-    5: (lambda: random_4piece_position(chess.ROOK,  chess.PAWN,     # KR vs KP: rook wins
+    # Mixed-material — stronger piece wins, forces piece value ordering
+    4: (lambda: random_4piece_position(chess.QUEEN, chess.ROOK),
+        lambda: random_4piece_position(chess.ROOK,  chess.QUEEN)),
+    5: (lambda: random_4piece_position(chess.ROOK, chess.PAWN,
                                        black_piece_on_ranks=_PAWN_RANKS),
-        lambda: random_4piece_position(chess.PAWN,  chess.ROOK,     # mirror: pawn side = -1
+        lambda: random_4piece_position(chess.PAWN, chess.ROOK,
                                        white_piece_on_ranks=_PAWN_RANKS)),
+    # Minor pieces vs pawn — teaches bishop/knight > pawn
+    6: (lambda: random_4piece_position(chess.BISHOP, chess.PAWN,
+                                       black_piece_on_ranks=_PAWN_RANKS),
+        lambda: random_4piece_position(chess.PAWN, chess.BISHOP,
+                                       white_piece_on_ranks=_PAWN_RANKS)),
+    7: (lambda: random_4piece_position(chess.KNIGHT, chess.PAWN,
+                                       black_piece_on_ranks=_PAWN_RANKS),
+        lambda: random_4piece_position(chess.PAWN, chess.KNIGHT,
+                                       white_piece_on_ranks=_PAWN_RANKS)),
+    # Balanced pawns — advancement heuristic label, forces pawn structure geometry
+    8: (lambda: random_kp_kp_position(white_more_advanced=True),
+        lambda: random_kp_kp_position(white_more_advanced=False)),
 }
 
 
