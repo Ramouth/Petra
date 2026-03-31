@@ -144,13 +144,65 @@ def random_kpk_position(white_has_pawn: bool = True) -> chess.Board:
         return board
 
 
+def random_4piece_position(white_piece: int, black_piece: int,
+                           white_piece_on_ranks=None, black_piece_on_ranks=None) -> chess.Board:
+    """
+    Generate one random legal 4-piece position: white king + piece vs black king + piece.
+    Both sides have material — forces the model to learn relative piece strength.
+
+    white_piece / black_piece: chess.QUEEN, chess.ROOK, chess.PAWN, etc.
+    white_piece_on_ranks / black_piece_on_ranks: restrict piece to these ranks (for pawns).
+    Label convention (caller's responsibility): stronger side = +1, weaker side = -1.
+    """
+    def valid_squares(piece_type, ranks):
+        if ranks is not None:
+            return [sq for sq in range(64) if chess.square_rank(sq) in ranks]
+        return list(range(64))
+
+    wp_squares = valid_squares(white_piece, white_piece_on_ranks)
+    bp_squares = valid_squares(black_piece, black_piece_on_ranks)
+
+    while True:
+        wp_sq = random.choice(wp_squares)
+        bp_sq = random.choice(bp_squares)
+        if wp_sq == bp_sq:
+            continue
+        remaining = [sq for sq in range(64) if sq not in (wp_sq, bp_sq)]
+        wk_sq, bk_sq = random.sample(remaining, 2)
+
+        board = chess.Board(fen=None)
+        board.clear()
+        board.set_piece_at(wk_sq, chess.Piece(chess.KING,  chess.WHITE))
+        board.set_piece_at(wp_sq, chess.Piece(white_piece, chess.WHITE))
+        board.set_piece_at(bk_sq, chess.Piece(chess.KING,  chess.BLACK))
+        board.set_piece_at(bp_sq, chess.Piece(black_piece, chess.BLACK))
+        board.turn = chess.WHITE
+
+        if not board.is_valid():
+            continue
+        if board.is_game_over():
+            continue
+
+        return board
+
+
+_PAWN_RANKS = list(range(1, 7))  # ranks 2-7 (0-indexed 1-6)
+
 _STAGE_GENERATORS = {
+    # Single-piece endgames — who has the piece wins
     1: (lambda: random_kqk_position(white_has_queen=True),
         lambda: random_kqk_position(white_has_queen=False)),
     2: (lambda: random_krk_position(white_has_rook=True),
         lambda: random_krk_position(white_has_rook=False)),
     3: (lambda: random_kpk_position(white_has_pawn=True),
         lambda: random_kpk_position(white_has_pawn=False)),
+    # Mixed-material endgames — stronger piece wins, forces piece value ordering
+    4: (lambda: random_4piece_position(chess.QUEEN, chess.ROOK),    # KQ vs KR: queen wins
+        lambda: random_4piece_position(chess.ROOK,  chess.QUEEN)),  # mirror: rook side = -1
+    5: (lambda: random_4piece_position(chess.ROOK,  chess.PAWN,     # KR vs KP: rook wins
+                                       black_piece_on_ranks=_PAWN_RANKS),
+        lambda: random_4piece_position(chess.PAWN,  chess.ROOK,     # mirror: pawn side = -1
+                                       white_piece_on_ranks=_PAWN_RANKS)),
 }
 
 
