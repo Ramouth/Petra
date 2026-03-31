@@ -1,7 +1,7 @@
 #!/bin/sh
 #BSUB -q hpc
-#BSUB -n 1
-#BSUB -R "rusage[mem=8GB]"
+#BSUB -n 8
+#BSUB -R "span[hosts=1] rusage[mem=8GB]"
 #BSUB -M 8GB
 #BSUB -W 4:00
 #BSUB -J petra_stage2_geometry
@@ -31,3 +31,11 @@ echo "=== Stage 2: mixed endgame curriculum (stages 1-8) ==="
 echo "--- Geometry probe ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/test_geometry.py \
   --model models/geometry/stage2/best.pt
+
+echo "--- Step 6: MCTS(geometry) vs MCTS(material) ---"
+/zhome/81/b/206091/petra-env/bin/python3 src/evaluate.py \
+  --model models/geometry/stage2/best.pt \
+  --games 100 \
+  --step 6 \
+  --n-sim 200 \
+  --workers 8

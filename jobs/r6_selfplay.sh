@@ -1,9 +1,9 @@
 #!/bin/sh
 #BSUB -q hpc
-#BSUB -n 8
+#BSUB -n 16
 #BSUB -R "span[hosts=1] rusage[mem=4GB]"
 #BSUB -M 4GB
-#BSUB -W 6:00
+#BSUB -W 4:00
 #BSUB -J petra_r6_selfplay
 #BSUB -w "done(petra_r6_bootstrap)"
 #BSUB -o /zhome/81/b/206091/Petra-Phase1/logs/lsf_r6_selfplay.log
@@ -15,5 +15,5 @@ cd /zhome/81/b/206091/Petra-Phase1/src
   --games 500 \
   --n-sim 400 \
   --out /zhome/81/b/206091/Petra-Phase1/data/selfplay_r6.pt \
-  --workers 8 \
+  --workers 16 \
   --opening-book /zhome/81/b/206091/Petra-Phase1/data/openings_r2.txt
