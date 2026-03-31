@@ -160,8 +160,30 @@ The knight is explicitly excluded from interference geometry — it jumps, so bl
 
 | Item | Status |
 |------|--------|
-| Stage 1 KQK | ✅ Complete |
-| Stage 2 KRK job | ✅ Ready (`jobs/stage2_geometry.sh`) |
-| Step 6 eval | ⏳ Pending |
-| GPU plan | ⏳ After 3 stages |
-| Per-piece geometry | ⏳ After Stage 3 |
+| Stage 1 KQK | ✅ Complete (centroid cosine 0.1753) |
+| Per-piece geometry bottleneck | ✅ Implemented (849k params) |
+| Mixed curriculum (KQK+KRK+KPK) | ✅ Ready (`jobs/stage2_geometry.sh`) |
+| Step 6 eval | ⏳ Pending (rerun on HPC) |
+| GPU plan | ⏳ After 3 stages confirmed |
+
+---
+
+## GPU scaling — collapse risks
+
+More compute accelerates everything, including failure modes. Known risks and mitigations:
+
+**Collapse modes:**
+
+- **Antipodal trivial solution** — model satisfies `cos(g, g_flip) < 0` by driving geometry vectors toward zero. Symptom: antipodal loss hits zero in epoch 1 with no improvement in val loss. Norm penalty mitigates but may not be sufficient at large batch sizes.
+- **Value head races ahead** — fast convergence on value loss before geometry has separated. The antipodal loss is the only geometry-independent signal; if it's weighted too low it loses the race.
+- **Phase transition too fast** — on GPU, epochs take seconds. Tight patience of 3 epochs may not be enough time for geometry to stabilise after the saddle escape. Recalibrate tight patience for GPU epoch speed before long runs.
+- **Selfplay position collapse** — at GPU scale, selfplay generates positions fast. Repetitive patterns can satisfy the loss without geometric variety. Per-epoch random regeneration partially protects; selfplay positions need diversity monitoring.
+
+**Safeguards to build before GPU:**
+
+- Track centroid cosine and color-flip cosine at every epoch — these are the real health metrics, not val loss. Geometry regression should trigger early stopping independently of loss improvement.
+- Checkpoint every epoch regardless of best — the correct state may be 2 epochs before early stopping fires.
+- Short calibration run first to validate tight patience at GPU epoch speed.
+- The per-piece architecture is structurally more collapse-resistant than the flat bottleneck — no single shortcut produces a constant output — but this is not a guarantee.
+
+**The honest position:** collapse dynamics at GPU scale are unknown until we run it. The goal is continuous geometry monitoring so collapse is visible before the run is lost.
