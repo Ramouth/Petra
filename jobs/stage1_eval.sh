@@ -12,7 +12,7 @@ cd /zhome/81/b/206091/Petra-Phase1/src
 
 echo "=== Step 6: MCTS(geometry) vs MCTS(material) — Stage 1 model ==="
 /zhome/81/b/206091/petra-env/bin/python3 evaluate.py \
-  --model /zhome/81/b/206091/Petra-Phase1/models/geometry/stage1/best.pt \
+  --model /zhome/81/b/206091/Petra-Phase1/models/geometry/stage1_best.pt \
   --games 100 \
   --step 6 \
   --n-sim 200 \
