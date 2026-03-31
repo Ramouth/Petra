@@ -104,50 +104,62 @@ def random_krk_position(white_has_rook: bool = True) -> chess.Board:
         return board
 
 
-def generate_positions(n: int, include_mirrors: bool = True, stage: int = 1):
-    """
-    Generate n endgame positions for the given curriculum stage.
+_STAGE_GENERATORS = {
+    1: (lambda: random_kqk_position(white_has_queen=True),
+        lambda: random_kqk_position(white_has_queen=False)),
+    2: (lambda: random_krk_position(white_has_rook=True),
+        lambda: random_krk_position(white_has_rook=False)),
+}
 
-    stage=1: KQ vs K  (white has queen → +1, mirror has black queen → -1)
-    stage=2: KR vs K  (white has rook  → +1, mirror has black rook  → -1)
+
+def generate_positions(n: int, include_mirrors: bool = True, stages=None):
+    """
+    Generate n endgame positions, mixed across one or more curriculum stages.
+
+    stages: int or list of ints — 1=KQK, 2=KRK. Default [1].
+    Positions are split evenly across stages so the model sees all piece
+    types simultaneously and learns the abstraction "stronger piece = win"
+    rather than memorising a single piece type.
 
     If include_mirrors=True, each position is paired with its color-flipped
-    mirror for a total of 2n positions. Mirrors are the antipodal partners
-    used by the antipodal loss.
+    mirror (2n total). Mirrors are the antipodal partners for the antipodal loss.
 
-    Returns list of (board, value) tuples.
-    Side-to-move relative: stronger-side positions → +1, mirror → -1.
+    Returns list of (board, value) tuples, shuffled.
     """
-    if stage == 1:
-        pos_fn    = lambda: random_kqk_position(white_has_queen=True)
-        mirror_fn = lambda: random_kqk_position(white_has_queen=False)
-    elif stage == 2:
-        pos_fn    = lambda: random_krk_position(white_has_rook=True)
-        mirror_fn = lambda: random_krk_position(white_has_rook=False)
-    else:
-        raise ValueError(f"Unknown endgame stage: {stage}. Supported: 1 (KQK), 2 (KRK)")
+    if stages is None:
+        stages = [1]
+    if isinstance(stages, int):
+        stages = [stages]
 
-    positions = []
-    generated = 0
-    seen_fens = set()
+    for s in stages:
+        if s not in _STAGE_GENERATORS:
+            raise ValueError(f"Unknown endgame stage: {s}. Supported: {list(_STAGE_GENERATORS)}")
 
-    while generated < n:
-        board = pos_fn()
-        fen = board.board_fen()
-        if fen in seen_fens:
-            continue
-        seen_fens.add(fen)
+    # Split n evenly; last stage gets any remainder
+    n_per_stage = [n // len(stages)] * len(stages)
+    n_per_stage[-1] += n - sum(n_per_stage)
 
-        positions.append((board, +1.0))
-        generated += 1
+    all_positions = []
+    for stage, n_stage in zip(stages, n_per_stage):
+        pos_fn, mirror_fn = _STAGE_GENERATORS[stage]
+        generated = 0
+        seen_fens = set()
 
-        if include_mirrors:
-            # Antipodal partner: color-flipped version, white to move
-            # White now has bare king, other side has piece → label = -1
-            mirror = mirror_fn()
-            positions.append((mirror, -1.0))
+        while generated < n_stage:
+            board = pos_fn()
+            fen = board.board_fen()
+            if fen in seen_fens:
+                continue
+            seen_fens.add(fen)
 
-    return positions
+            all_positions.append((board, +1.0))
+            generated += 1
+
+            if include_mirrors:
+                all_positions.append((mirror_fn(), -1.0))
+
+    random.shuffle(all_positions)
+    return all_positions
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +278,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--positions",  type=int, default=10000,
                     help="Number of stronger-side positions to generate (mirrors included automatically)")
-    ap.add_argument("--stage",      type=int, default=1,
-                    help="Endgame stage: 1=KQK (default), 2=KRK")
+    ap.add_argument("--stages",     type=int, nargs="+", default=[1],
+                    help="Endgame stages to mix, space-separated: 1=KQK, 2=KRK (default: 1)")
     ap.add_argument("--out",        required=True,
                     help="Output .pt file path")
     ap.add_argument("--no-mirrors", action="store_true",
@@ -281,13 +293,14 @@ def main():
 
     random.seed(args.seed)
     include_mirrors = not args.no_mirrors
-    stage_name = {1: "KQ vs K", 2: "KR vs K"}.get(args.stage, f"stage {args.stage}")
+    stage_names = {1: "KQ vs K", 2: "KR vs K"}
+    label = "+".join(stage_names.get(s, f"stage{s}") for s in args.stages)
 
-    print(f"Generating {args.positions:,} {stage_name} positions"
+    print(f"Generating {args.positions:,} {label} positions"
           + (" + mirrors" if include_mirrors else "") + " ...")
 
     positions = generate_positions(args.positions, include_mirrors=include_mirrors,
-                                   stage=args.stage)
+                                   stages=args.stages)
     print(f"  Generated {len(positions):,} positions total")
 
     if args.stockfish:

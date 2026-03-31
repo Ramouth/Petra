@@ -10,9 +10,7 @@
 
 cd /zhome/81/b/206091/Petra-Phase1
 
-echo "=== Stage 1: KQ vs K geometry curriculum ==="
-
-echo "--- Training with antipodal loss (per-epoch position regeneration) ---"
+echo "=== Stage 1: KQ vs K ==="
 /zhome/81/b/206091/petra-env/bin/python3 src/train.py \
   --out models/geometry/stage1 \
   --epochs 80 \
@@ -24,7 +22,7 @@ echo "--- Training with antipodal loss (per-epoch position regeneration) ---"
   --antipodal-margin 0.0 \
   --policy-weight 0.0 \
   --endgame-positions 10000 \
-  --endgame-stage 1
+  --endgame-stages 1
 
 echo "--- Geometry probe ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/test_geometry.py \

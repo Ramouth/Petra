@@ -261,11 +261,11 @@ def train(dataset_path: str = None,
           antipodal_margin: float = 0.0,
           policy_weight: float = 1.0,
           endgame_positions: int = 0,
-          endgame_stage: int = 1):
+          endgame_stages=None):
     """
     endgame_positions > 0: regenerate endgame positions each epoch instead of
-    using a fixed dataset. Prevents position memorisation. endgame_stage
-    controls which position class to generate (1=KQK, 2=KRK).
+    using a fixed dataset. Prevents position memorisation. endgame_stages
+    controls which position classes to mix (e.g. [1,2] = KQK+KRK together).
 
     tight_patience: patience used after a phase transition is detected.
     transition_drop: fraction drop in val loss in one epoch that signals a
@@ -273,18 +273,23 @@ def train(dataset_path: str = None,
     """
     from generate_endgame import generate_positions, build_dataset as _build_eg
 
+    _stages = endgame_stages if endgame_stages is not None else [1]
+    if isinstance(_stages, int):
+        _stages = [_stages]
+
     torch.manual_seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
     def _fresh_endgame_data():
         positions = generate_positions(endgame_positions, include_mirrors=True,
-                                       stage=endgame_stage)
+                                       stages=_stages)
         return _build_eg(positions)
 
     regenerate = endgame_positions > 0
 
     if regenerate:
-        print(f"Endgame curriculum: stage={endgame_stage}  "
+        stage_str = "+".join(f"stage{s}" for s in _stages)
+        print(f"Endgame curriculum: {stage_str}  "
               f"positions/epoch={endgame_positions:,} + mirrors")
         data = _fresh_endgame_data()
         dense_policy = True
@@ -463,8 +468,9 @@ def main():
     ap.add_argument("--endgame-positions", type=int, default=0,
                     help="If > 0, regenerate this many endgame positions each epoch "
                          "(prevents memorisation). Replaces --dataset for endgame curriculum.")
-    ap.add_argument("--endgame-stage",     type=int, default=1,
-                    help="Endgame curriculum stage: 1=KQK, 2=KRK (default: 1)")
+    ap.add_argument("--endgame-stages", type=int, nargs="+", default=[1],
+                    help="Endgame stages to mix, space-separated: 1=KQK, 2=KRK "
+                         "(e.g. --endgame-stages 1 2). Default: 1")
     args = ap.parse_args()
 
     if args.dataset is None and args.endgame_positions == 0:
@@ -487,7 +493,7 @@ def main():
         antipodal_margin=args.antipodal_margin,
         policy_weight=args.policy_weight,
         endgame_positions=args.endgame_positions,
-        endgame_stage=args.endgame_stage,
+        endgame_stages=args.endgame_stages,
     )
 
 
