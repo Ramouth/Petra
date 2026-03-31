@@ -60,6 +60,26 @@ def board_to_tensor(board: chess.Board) -> torch.Tensor:
     return t
 
 
+def flip_board_tensor(t: torch.Tensor) -> torch.Tensor:
+    """
+    Color-flip a (..., 14, 8, 8) board tensor without going through chess.Board.
+
+    Equivalent to board.mirror(): swap white/black piece planes, flip ranks,
+    flip side-to-move plane, flip castling plane ranks.
+
+    Works on single tensors (14, 8, 8) and batches (N, 14, 8, 8).
+    """
+    f = t.clone()
+    # Swap white pieces (planes 0-5) and black pieces (planes 6-11), flip ranks
+    f[..., 0:6, :, :] = t[..., 6:12, :, :].flip(-2)
+    f[..., 6:12, :, :] = t[..., 0:6, :, :].flip(-2)
+    # Flip side-to-move (uniform plane: 1=white, 0=black)
+    f[..., 12, :, :] = 1.0 - t[..., 12, :, :]
+    # Flip castling plane ranks (WK/WQ corners ↔ BK/BQ corners)
+    f[..., 13, :, :] = t[..., 13, :, :].flip(-2)
+    return f
+
+
 def outcome_to_value(result: str, turn: chess.Color) -> float:
     """
     Convert a PGN result string to a value from the perspective of `turn`.

@@ -32,6 +32,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import PetraNet
+from board import flip_board_tensor
 from config import device
 
 
@@ -126,9 +127,42 @@ def mix_anchor(primary_data: dict, anchor_path: str, anchor_frac: float) -> dict
 # Training
 # ---------------------------------------------------------------------------
 
-def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = False):
+def antipodal_loss(model, tensors: torch.Tensor,
+                   margin: float = 0.0, min_norm: float = 0.5) -> torch.Tensor:
+    """
+    Antipodal geometry loss.
+
+    Forces color-flipped positions to have geometry vectors pointing in the
+    opposite direction (cosine similarity < -margin).
+
+    Also penalises geometry collapse to zero via norm regularisation:
+    any geometry vector with norm < min_norm is penalised.
+
+    L = mean(max(0, cos(g, g_flip) + margin)) + mean(max(0, min_norm - ||g||)^2)
+    """
+    t_flip = flip_board_tensor(tensors)
+    g      = model.geometry(tensors)
+    g_flip = model.geometry(t_flip)
+
+    # Cosine similarity per sample
+    g_norm      = g.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    g_flip_norm = g_flip.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    cos = (g * g_flip / (g_norm * g_flip_norm)).sum(dim=1)  # (N,)
+
+    antipodal = torch.clamp(cos + margin, min=0.0).mean()
+
+    # Norm regularisation — prevent collapse to zero
+    norms = g.norm(dim=1)  # (N,)
+    norm_penalty = torch.clamp(min_norm - norms, min=0.0).pow(2).mean()
+
+    return antipodal + norm_penalty
+
+
+def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = False,
+              antipodal_weight: float = 0.0, antipodal_margin: float = 0.0,
+              policy_weight: float = 1.0):
     model.train(is_train)
-    total_loss = total_vloss = total_ploss = 0.0
+    total_loss = total_vloss = total_ploss = total_aloss = 0.0
     n_batches = 0
     all_value_preds, all_value_targets = [], []
     policy_correct_top1 = policy_correct_top5 = policy_total = 0
@@ -156,7 +190,13 @@ def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = Fal
                 ploss = -(visit_dists * log_probs).sum(dim=-1).mean()
             else:
                 ploss = F.cross_entropy(policy_logits, move_idxs)
-            loss  = vloss + ploss
+
+            aloss = torch.tensor(0.0, device=device)
+            if antipodal_weight > 0.0 and is_train:
+                aloss = antipodal_loss(model, tensors,
+                                       margin=antipodal_margin)
+
+            loss = vloss + policy_weight * ploss + antipodal_weight * aloss
 
             if is_train:
                 optimizer.zero_grad()
@@ -167,6 +207,7 @@ def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = Fal
             total_loss  += loss.item()
             total_vloss += vloss.item()
             total_ploss += ploss.item()
+            total_aloss += aloss.item()
             n_batches   += 1
 
             # Accumulate for R² and accuracy
@@ -185,12 +226,13 @@ def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = Fal
     r2      = 1.0 - ss_res / ss_tot
 
     return {
-        "loss":       total_loss  / n_batches,
-        "value_loss": total_vloss / n_batches,
-        "policy_loss":total_ploss / n_batches,
-        "value_r2":   r2,
-        "top1":       policy_correct_top1 / policy_total,
-        "top5":       policy_correct_top5 / policy_total,
+        "loss":          total_loss  / n_batches,
+        "value_loss":    total_vloss / n_batches,
+        "policy_loss":   total_ploss / n_batches,
+        "antipodal_loss":total_aloss / n_batches,
+        "value_r2":      r2,
+        "top1":          policy_correct_top1 / policy_total,
+        "top5":          policy_correct_top5 / policy_total,
     }
 
 
@@ -203,7 +245,10 @@ def train(dataset_path: str,
           seed: int = 42,
           init_model: str = None,
           anchor_dataset: str = None,
-          anchor_frac: float = 0.15):
+          anchor_frac: float = 0.15,
+          antipodal_weight: float = 0.0,
+          antipodal_margin: float = 0.0,
+          policy_weight: float = 1.0):
 
     torch.manual_seed(seed)
     os.makedirs(out_dir, exist_ok=True)
@@ -239,15 +284,25 @@ def train(dataset_path: str,
     best_val_loss = float("inf")
     epochs_no_improve = 0
 
+    if antipodal_weight > 0:
+        print(f"Antipodal loss: weight={antipodal_weight}  margin={antipodal_margin}  "
+              f"policy_weight={policy_weight}")
+
     print(f"\n{'Epoch':>5}  {'T-loss':>7}  {'V-loss':>7}  {'V-MSE':>6}  "
-          f"{'V-R²':>6}  {'Top1':>5}  {'Top5':>5}  {'LR':>8}")
-    print("-" * 65)
+          f"{'V-R²':>6}  {'Top1':>5}  {'Top5':>5}  {'Antipod':>7}  {'LR':>8}")
+    print("-" * 75)
 
     for epoch in range(1, epochs + 1):
         t0 = time.time()
 
-        train_m = run_epoch(model, train_loader, optimizer, is_train=True,  dense_policy=dense_policy)
-        val_m   = run_epoch(model, val_loader,   optimizer, is_train=False, dense_policy=dense_policy)
+        train_m = run_epoch(model, train_loader, optimizer, is_train=True,
+                            dense_policy=dense_policy,
+                            antipodal_weight=antipodal_weight,
+                            antipodal_margin=antipodal_margin,
+                            policy_weight=policy_weight)
+        val_m   = run_epoch(model, val_loader,   optimizer, is_train=False,
+                            dense_policy=dense_policy,
+                            policy_weight=policy_weight)
 
         scheduler.step(val_m["loss"])
         lr_now = optimizer.param_groups[0]["lr"]
@@ -260,6 +315,7 @@ def train(dataset_path: str,
               f"{val_m['value_r2']:>6.3f}  "
               f"{val_m['top1']:>5.3f}  "
               f"{val_m['top5']:>5.3f}  "
+              f"{train_m['antipodal_loss']:>7.4f}  "
               f"{lr_now:>8.2e}  "
               f"({elapsed:.0f}s)")
 
@@ -341,8 +397,17 @@ def main():
     ap.add_argument("--anchor-dataset", default=None,
                     help="Path to supervised SF dataset to mix in as an anchor "
                          "(prevents value collapse). Typically dataset_sf.pt.")
-    ap.add_argument("--anchor-frac", type=float, default=0.15,
+    ap.add_argument("--anchor-frac",       type=float, default=0.15,
                     help="Fraction of primary train size to sample from anchor (default: 0.15)")
+    ap.add_argument("--antipodal-weight",  type=float, default=0.0,
+                    help="Weight for antipodal geometry loss (default: 0 = disabled). "
+                         "Start at 0.1 for endgame curriculum.")
+    ap.add_argument("--antipodal-margin",  type=float, default=0.0,
+                    help="Margin for antipodal loss: penalise cos(g, g_flip) > -margin. "
+                         "Default 0 forces cos < 0; use 0.5 to force cos < -0.5.")
+    ap.add_argument("--policy-weight",     type=float, default=1.0,
+                    help="Weight for policy loss (default: 1.0). Set to 0 for pure "
+                         "geometry/value training on endgame positions.")
     args = ap.parse_args()
 
     train(
@@ -356,6 +421,9 @@ def main():
         init_model=args.init_model,
         anchor_dataset=args.anchor_dataset,
         anchor_frac=args.anchor_frac,
+        antipodal_weight=args.antipodal_weight,
+        antipodal_margin=args.antipodal_margin,
+        policy_weight=args.policy_weight,
     )
 
 
