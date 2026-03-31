@@ -104,11 +104,53 @@ def random_krk_position(white_has_rook: bool = True) -> chess.Board:
         return board
 
 
+def random_kpk_position(white_has_pawn: bool = True) -> chess.Board:
+    """
+    Generate one random legal K+P vs K position.
+
+    white_has_pawn=True  → white king + pawn, black bare king, white to move
+    white_has_pawn=False → black king + pawn, white bare king, white to move
+
+    Pawn is placed on ranks 2–7 (never rank 1 or 8).
+    Labels are noisy — some K+P vs K positions are theoretical draws —
+    but the pawn's geometry will cluster distinctly from major pieces.
+    """
+    pawn_squares = [sq for sq in range(64) if 1 <= chess.square_rank(sq) <= 6]
+
+    while True:
+        pawn_sq = random.choice(pawn_squares)
+        remaining = [sq for sq in range(64) if sq != pawn_sq]
+        wk_sq, bk_sq = random.sample(remaining, 2)
+
+        board = chess.Board(fen=None)
+        board.clear()
+
+        if white_has_pawn:
+            board.set_piece_at(wk_sq,   chess.Piece(chess.KING, chess.WHITE))
+            board.set_piece_at(pawn_sq, chess.Piece(chess.PAWN, chess.WHITE))
+            board.set_piece_at(bk_sq,   chess.Piece(chess.KING, chess.BLACK))
+        else:
+            board.set_piece_at(wk_sq,   chess.Piece(chess.KING, chess.WHITE))
+            board.set_piece_at(pawn_sq, chess.Piece(chess.PAWN, chess.BLACK))
+            board.set_piece_at(bk_sq,   chess.Piece(chess.KING, chess.BLACK))
+
+        board.turn = chess.WHITE
+
+        if not board.is_valid():
+            continue
+        if board.is_game_over():
+            continue
+
+        return board
+
+
 _STAGE_GENERATORS = {
     1: (lambda: random_kqk_position(white_has_queen=True),
         lambda: random_kqk_position(white_has_queen=False)),
     2: (lambda: random_krk_position(white_has_rook=True),
         lambda: random_krk_position(white_has_rook=False)),
+    3: (lambda: random_kpk_position(white_has_pawn=True),
+        lambda: random_kpk_position(white_has_pawn=False)),
 }
 
 

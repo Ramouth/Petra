@@ -10,7 +10,7 @@
 
 cd /zhome/81/b/206091/Petra-Phase1
 
-echo "=== Stage 2: KQ vs K + KR vs K (mixed) ==="
+echo "=== Stage 2: KQ vs K + KR vs K + K+P vs K (mixed) ==="
 /zhome/81/b/206091/petra-env/bin/python3 src/train.py \
   --out models/geometry/stage2 \
   --epochs 80 \
@@ -21,8 +21,8 @@ echo "=== Stage 2: KQ vs K + KR vs K (mixed) ==="
   --antipodal-weight 1.0 \
   --antipodal-margin 0.0 \
   --policy-weight 0.0 \
-  --endgame-positions 10000 \
-  --endgame-stages 1 2
+  --endgame-positions 12000 \
+  --endgame-stages 1 2 3
 
 echo "--- Geometry probe ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/test_geometry.py \
