@@ -135,6 +135,49 @@ Threshold: >52% to advance (50% = geometry and material are equivalent).
 
 ---
 
+## Mate blindness — hypothesis and fix
+
+**The problem:**
+
+The model knows it is winning but cannot find mate. In KQ vs K, value outputs +0.996 for every position regardless of whether it is mate-in-1 or mate-in-30. The geometry of both positions is nearly identical. MCTS has no signal distinguishing them and shuffles pieces indefinitely.
+
+The geometry probe Test 4 (forced mate convergence) measures this directly — win projection does not increase monotonically as mate approaches. The geometry has no "closeness to terminal" dimension.
+
+**The root cause:**
+
+The geometry is static. It evaluates a position in isolation. But a position only has meaning through what it can become. Mate-in-1 and mate-in-30 are geometrically indistinguishable now — the difference is entirely in their reachable futures. One legal continuation leads to the terminal state (win pole). The other does not.
+
+*There is only a now in the context of a future unfolding.* The geometry vector is not a property of the position — it is a property of the position's relationship to its continuations.
+
+**The fix — dynamic geometry MCTS:**
+
+At each MCTS node, evaluate the geometry of all legal continuations, not just the current position:
+
+```
+score(move) = projection of g(board_after_move) onto win/loss axis
+```
+
+MCTS selects moves by where the geometry goes, not where it is. Mate blindness dissolves: the mating move produces a terminal state whose geometry IS the win pole. The model sees this in the next-position geometry without requiring depth-to-mate to be encoded in the current position.
+
+**The transition function as the enabling mechanism:**
+
+`f(g_t, move) → g_{t+1}` — predict the geometry of the position after a move without a full board forward pass. Trained from selfplay sequences (every game is a sequence of geometry vectors and moves). Once trained:
+
+1. Compute g_now from the board (per-piece sum — current architecture)
+2. For each legal move, predict g_next = f(g_now, move)
+3. Score by projection of g_next onto the win/loss axis
+4. MCTS selects and expands on this score
+
+Full board forward passes needed only at the root and periodically for recalibration. Everything else is geometry. This is what makes MCTS scale — the expensive board evaluation is replaced by cheap geometry projection.
+
+**When to build it:**
+
+After Stage 2 geometry confirms the per-piece architecture produces stable, ordered geometry (Q > R > B ≈ N > P, centroid cosine < -0.4). The transition function needs a stable geometry space to be trained in. Building it on an unstable space is building on sand.
+
+The forced mate convergence test (Test 4) is the readiness gate: when it moves from FAIL to WARN, the geometry is beginning to encode depth. That is when the transition function becomes trainable.
+
+---
+
 ## GPU trigger
 
 Three stages of confirmed geometry improvement (centroid cosine decreasing, color flip negative and increasing) → plan GPU migration for batched MCTS + larger model.
