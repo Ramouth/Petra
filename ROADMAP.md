@@ -241,9 +241,25 @@ f(g_t, move) → g_{t+1}
 
 Training data comes for free from every self-play game — you have the geometry at every position and every move played. The transition function is what enables planning in geometry space without expanding the full board tree. Legal move generation remains board-grounded; everything else is geometry.
 
+### Per-piece geometry
+
+Each piece carries its own geometry vector rather than contributing anonymously to a global board vector. The board geometry is a composition of piece geometries. This makes piece value ordering explicit and learnable from pure endgames — a queen's geometry activates more winning components than a rook's by construction, because they are trained on positions where that is unambiguously true.
+
+Per-piece geometry also makes the geometry transition function tractable: when a piece moves, only that piece's geometry vector needs updating. The interaction term (board geometry = f(piece geometries)) can recompute cheaply from the changed piece rather than requiring a full board forward pass.
+
+### Piece interference geometry (excluding the knight)
+
+Each sliding piece (rook, bishop, queen) and the king and pawns have their reach constrained by other pieces on the board. A rook on an open file has different geometry than a rook blocked by its own pawn — not just different mobility, but a different positional identity. This constraint is part of the piece's geometry.
+
+The knight is explicitly excluded. The knight jumps — its movement is not blocked by intervening pieces. Its geometry is determined by its square and the board boundaries alone, not by what stands between it and its destination. Treating the knight like a sliding piece here would be architecturally wrong.
+
+Concretely: the interference geometry for a sliding piece is the set of squares it actually controls given current board occupancy (its ray truncated at blockers). This is a per-piece, per-position feature that feeds into the piece's geometry vector. It encodes both activity (open lines) and confinement (blocked lines) directly.
+
+This is where back rank mate becomes representable: a rook's interference geometry pointing unobstructed at the opponent king's back rank, combined with the king's confinement geometry (pawns blocking escape squares), produces the danger signal. Neither alone is sufficient — the combination is.
+
 ### Relationship to R6/R7
 
-R6 and R7 continue as planned — they test whether the Tanh fix is sufficient within the current full-game training approach. This alternative path runs in parallel as a lower-compute, higher-confidence route to validating the geometry hypothesis. The two paths converge if R6/R7 succeed: full-game training with geometry-aware MCTS. If R6/R7 fail, the endgame-first path is the fallback that doesn't require starting over entirely.
+R6 confirmed that changing the activation function alone (ReLU → Tanh) does not produce antipodal geometry — centroid cosine worsened from 0.869 to 0.981. The training signal never demanded geometric separation. R7 full-game selfplay is superseded by the endgame-first curriculum as the primary geometry path. R4 remains the best playing model.
 
 ---
 
