@@ -236,38 +236,65 @@ def run_epoch(model, loader, optimizer, is_train: bool, dense_policy: bool = Fal
     }
 
 
-def train(dataset_path: str,
-          out_dir: str,
+def _make_loader_from_data(data, split, batch_size, shuffle):
+    d = data[split]
+    ds = TensorDataset(
+        d["tensors"], d["values"], d["move_idxs"], _ensure_visit_dists(d)
+    )
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=0, pin_memory=(device.type == "cuda"))
+
+
+def train(dataset_path: str = None,
+          out_dir: str = "models",
           epochs: int = 15,
           batch_size: int = 512,
           lr: float = 1e-3,
           patience: int = 5,
+          tight_patience: int = 3,
+          transition_drop: float = 0.5,
           seed: int = 42,
           init_model: str = None,
           anchor_dataset: str = None,
           anchor_frac: float = 0.15,
           antipodal_weight: float = 0.0,
           antipodal_margin: float = 0.0,
-          policy_weight: float = 1.0):
+          policy_weight: float = 1.0,
+          endgame_positions: int = 0,
+          endgame_stage: int = 1):
+    """
+    endgame_positions > 0: regenerate endgame positions each epoch instead of
+    using a fixed dataset. Prevents position memorisation. endgame_stage
+    controls which position class to generate (1=KQK, 2=KRK).
+
+    tight_patience: patience used after a phase transition is detected.
+    transition_drop: fraction drop in val loss in one epoch that signals a
+    phase transition (default 0.5 = 50% drop).
+    """
+    from generate_endgame import generate_positions, build_dataset as _build_eg
 
     torch.manual_seed(seed)
     os.makedirs(out_dir, exist_ok=True)
 
-    make_loader, data, dense_policy = load_dataset(dataset_path)
+    def _fresh_endgame_data():
+        positions = generate_positions(endgame_positions, include_mirrors=True,
+                                       stage=endgame_stage)
+        return _build_eg(positions)
 
-    if anchor_dataset:
-        data = mix_anchor(data, anchor_dataset, anchor_frac)
-        # Rebuild make_loader to use the mixed data (visit_dists created if absent)
-        def make_loader(split, batch_size, shuffle):
-            d = data[split]
-            ds = TensorDataset(
-                d["tensors"], d["values"], d["move_idxs"], _ensure_visit_dists(d)
-            )
-            return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                              num_workers=0, pin_memory=(device.type == "cuda"))
+    regenerate = endgame_positions > 0
 
-    train_loader = make_loader("train", batch_size=batch_size, shuffle=True)
-    val_loader   = make_loader("val",   batch_size=batch_size, shuffle=False)
+    if regenerate:
+        print(f"Endgame curriculum: stage={endgame_stage}  "
+              f"positions/epoch={endgame_positions:,} + mirrors")
+        data = _fresh_endgame_data()
+        dense_policy = True
+    else:
+        _, data, dense_policy = load_dataset(dataset_path)
+        if anchor_dataset:
+            data = mix_anchor(data, anchor_dataset, anchor_frac)
+
+    train_loader = _make_loader_from_data(data, "train", batch_size, shuffle=True)
+    val_loader   = _make_loader_from_data(data, "val",   batch_size, shuffle=False)
 
     model = PetraNet().to(device)
     if init_model:
@@ -281,19 +308,29 @@ def train(dataset_path: str,
         optimizer, patience=3, factor=0.5, min_lr=1e-5
     )
 
-    best_val_loss = float("inf")
-    epochs_no_improve = 0
-
     if antipodal_weight > 0:
         print(f"Antipodal loss: weight={antipodal_weight}  margin={antipodal_margin}  "
               f"policy_weight={policy_weight}")
+    print(f"Patience: {patience} (tight={tight_patience} after >{transition_drop*100:.0f}% val drop)")
 
     print(f"\n{'Epoch':>5}  {'T-loss':>7}  {'V-loss':>7}  {'V-MSE':>6}  "
           f"{'V-R²':>6}  {'Top1':>5}  {'Top5':>5}  {'Antipod':>7}  {'LR':>8}")
     print("-" * 75)
 
+    best_val_loss   = float("inf")
+    prev_val_loss   = float("inf")
+    epochs_no_improve = 0
+    current_patience  = patience
+    phase_transition  = False
+
     for epoch in range(1, epochs + 1):
         t0 = time.time()
+
+        # Regenerate dataset each epoch to prevent position memorisation
+        if regenerate and epoch > 1:
+            data = _fresh_endgame_data()
+            train_loader = _make_loader_from_data(data, "train", batch_size, shuffle=True)
+            val_loader   = _make_loader_from_data(data, "val",   batch_size, shuffle=False)
 
         train_m = run_epoch(model, train_loader, optimizer, is_train=True,
                             dense_policy=dense_policy,
@@ -305,8 +342,19 @@ def train(dataset_path: str,
                             policy_weight=policy_weight)
 
         scheduler.step(val_m["loss"])
-        lr_now = optimizer.param_groups[0]["lr"]
+        lr_now  = optimizer.param_groups[0]["lr"]
         elapsed = time.time() - t0
+
+        # Phase transition detection: val loss drops >transition_drop in one epoch
+        if not phase_transition and prev_val_loss < float("inf"):
+            drop = (prev_val_loss - val_m["loss"]) / (prev_val_loss + 1e-8)
+            if drop > transition_drop:
+                phase_transition  = True
+                current_patience  = tight_patience
+                print(f"         *** Phase transition detected (val drop {drop*100:.0f}%) "
+                      f"— switching to tight patience={tight_patience} ***")
+
+        prev_val_loss = val_m["loss"]
 
         print(f"{epoch:>5}  "
               f"{train_m['loss']:>7.4f}  "
@@ -319,18 +367,17 @@ def train(dataset_path: str,
               f"{lr_now:>8.2e}  "
               f"({elapsed:.0f}s)")
 
-        # Checkpointing
         torch.save(model.state_dict(), os.path.join(out_dir, "latest.pt"))
 
         if val_m["loss"] < best_val_loss:
-            best_val_loss = val_m["loss"]
+            best_val_loss     = val_m["loss"]
             epochs_no_improve = 0
             torch.save(model.state_dict(), os.path.join(out_dir, "best.pt"))
             print(f"         ↳ new best val loss: {best_val_loss:.4f}")
         else:
             epochs_no_improve += 1
-            if epochs_no_improve >= patience:
-                print(f"\nEarly stopping: no improvement for {patience} epochs.")
+            if epochs_no_improve >= current_patience:
+                print(f"\nEarly stopping: no improvement for {current_patience} epochs.")
                 break
 
     print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
@@ -385,12 +432,17 @@ def _sanity_check(model: PetraNet):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset",     required=True)
+    ap.add_argument("--dataset",     default=None,
+                    help="Path to pre-built dataset (.pt). Required unless --endgame-positions > 0.")
     ap.add_argument("--out",         default="models")
     ap.add_argument("--epochs",      type=int,   default=15)
     ap.add_argument("--batch-size",  type=int,   default=512)
     ap.add_argument("--lr",          type=float, default=1e-3)
     ap.add_argument("--patience",    type=int,   default=5)
+    ap.add_argument("--tight-patience", type=int, default=3,
+                    help="Patience after phase transition detected (default: 3)")
+    ap.add_argument("--transition-drop", type=float, default=0.5,
+                    help="Val loss drop fraction that triggers phase transition (default: 0.5)")
     ap.add_argument("--seed",        type=int,   default=42)
     ap.add_argument("--init-model",  default=None,
                     help="Load these weights before training (zigzag fine-tuning)")
@@ -408,7 +460,15 @@ def main():
     ap.add_argument("--policy-weight",     type=float, default=1.0,
                     help="Weight for policy loss (default: 1.0). Set to 0 for pure "
                          "geometry/value training on endgame positions.")
+    ap.add_argument("--endgame-positions", type=int, default=0,
+                    help="If > 0, regenerate this many endgame positions each epoch "
+                         "(prevents memorisation). Replaces --dataset for endgame curriculum.")
+    ap.add_argument("--endgame-stage",     type=int, default=1,
+                    help="Endgame curriculum stage: 1=KQK, 2=KRK (default: 1)")
     args = ap.parse_args()
+
+    if args.dataset is None and args.endgame_positions == 0:
+        ap.error("--dataset is required unless --endgame-positions > 0")
 
     train(
         dataset_path=args.dataset,
@@ -417,6 +477,8 @@ def main():
         batch_size=args.batch_size,
         lr=args.lr,
         patience=args.patience,
+        tight_patience=args.tight_patience,
+        transition_drop=args.transition_drop,
         seed=args.seed,
         init_model=args.init_model,
         anchor_dataset=args.anchor_dataset,
@@ -424,6 +486,8 @@ def main():
         antipodal_weight=args.antipodal_weight,
         antipodal_margin=args.antipodal_margin,
         policy_weight=args.policy_weight,
+        endgame_positions=args.endgame_positions,
+        endgame_stage=args.endgame_stage,
     )
 
 

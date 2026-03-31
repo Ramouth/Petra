@@ -70,23 +70,69 @@ def random_kqk_position(white_has_queen: bool = True) -> chess.Board:
         return board
 
 
-def generate_positions(n: int, include_mirrors: bool = True):
+def random_krk_position(white_has_rook: bool = True) -> chess.Board:
     """
-    Generate n KQ vs K positions.
+    Generate one random legal KR vs K position.
+
+    white_has_rook=True  → white king + rook, black bare king, white to move
+    white_has_rook=False → black king + rook, white bare king, white to move
+                           (the color-flipped antipodal partner)
+    """
+    while True:
+        squares = random.sample(range(64), 3)
+        wk_sq, piece_sq, bk_sq = squares
+
+        board = chess.Board(fen=None)
+        board.clear()
+
+        if white_has_rook:
+            board.set_piece_at(wk_sq,   chess.Piece(chess.KING, chess.WHITE))
+            board.set_piece_at(piece_sq, chess.Piece(chess.ROOK, chess.WHITE))
+            board.set_piece_at(bk_sq,   chess.Piece(chess.KING, chess.BLACK))
+        else:
+            board.set_piece_at(wk_sq,   chess.Piece(chess.KING, chess.WHITE))
+            board.set_piece_at(piece_sq, chess.Piece(chess.ROOK, chess.BLACK))
+            board.set_piece_at(bk_sq,   chess.Piece(chess.KING, chess.BLACK))
+
+        board.turn = chess.WHITE
+
+        if not board.is_valid():
+            continue
+        if board.is_game_over():
+            continue
+
+        return board
+
+
+def generate_positions(n: int, include_mirrors: bool = True, stage: int = 1):
+    """
+    Generate n endgame positions for the given curriculum stage.
+
+    stage=1: KQ vs K  (white has queen → +1, mirror has black queen → -1)
+    stage=2: KR vs K  (white has rook  → +1, mirror has black rook  → -1)
 
     If include_mirrors=True, each position is paired with its color-flipped
-    mirror (bare-king side has queen) for a total of 2n positions.
-    Mirrors are the antipodal partners used by the antipodal loss.
+    mirror for a total of 2n positions. Mirrors are the antipodal partners
+    used by the antipodal loss.
 
     Returns list of (board, value) tuples.
-    Side-to-move relative: white-queen positions → +1, black-queen → -1.
+    Side-to-move relative: stronger-side positions → +1, mirror → -1.
     """
+    if stage == 1:
+        pos_fn    = lambda: random_kqk_position(white_has_queen=True)
+        mirror_fn = lambda: random_kqk_position(white_has_queen=False)
+    elif stage == 2:
+        pos_fn    = lambda: random_krk_position(white_has_rook=True)
+        mirror_fn = lambda: random_krk_position(white_has_rook=False)
+    else:
+        raise ValueError(f"Unknown endgame stage: {stage}. Supported: 1 (KQK), 2 (KRK)")
+
     positions = []
     generated = 0
     seen_fens = set()
 
     while generated < n:
-        board = random_kqk_position(white_has_queen=True)
+        board = pos_fn()
         fen = board.board_fen()
         if fen in seen_fens:
             continue
@@ -97,8 +143,8 @@ def generate_positions(n: int, include_mirrors: bool = True):
 
         if include_mirrors:
             # Antipodal partner: color-flipped version, white to move
-            # White now has bare king, black has queen → label = -1
-            mirror = random_kqk_position(white_has_queen=False)
+            # White now has bare king, other side has piece → label = -1
+            mirror = mirror_fn()
             positions.append((mirror, -1.0))
 
     return positions
@@ -195,7 +241,7 @@ def build_dataset(positions, val_frac: float = 0.1):
     losses = (pos_values < -0.5).sum().item()
 
     data["meta"] = {
-        "source":       "endgame_kqk",
+        "source":       "endgame",
         "n_train":      n_train,
         "n_val":        n_val,
         "stage":        1,
@@ -219,7 +265,9 @@ def build_dataset(positions, val_frac: float = 0.1):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--positions",  type=int, default=10000,
-                    help="Number of white-queen positions to generate (mirrors included automatically)")
+                    help="Number of stronger-side positions to generate (mirrors included automatically)")
+    ap.add_argument("--stage",      type=int, default=1,
+                    help="Endgame stage: 1=KQK (default), 2=KRK")
     ap.add_argument("--out",        required=True,
                     help="Output .pt file path")
     ap.add_argument("--no-mirrors", action="store_true",
@@ -233,11 +281,13 @@ def main():
 
     random.seed(args.seed)
     include_mirrors = not args.no_mirrors
+    stage_name = {1: "KQ vs K", 2: "KR vs K"}.get(args.stage, f"stage {args.stage}")
 
-    print(f"Generating {args.positions:,} KQ vs K positions"
+    print(f"Generating {args.positions:,} {stage_name} positions"
           + (" + mirrors" if include_mirrors else "") + " ...")
 
-    positions = generate_positions(args.positions, include_mirrors=include_mirrors)
+    positions = generate_positions(args.positions, include_mirrors=include_mirrors,
+                                   stage=args.stage)
     print(f"  Generated {len(positions):,} positions total")
 
     if args.stockfish:

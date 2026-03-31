@@ -4,17 +4,17 @@
 #BSUB -R "rusage[mem=8GB]"
 #BSUB -M 8GB
 #BSUB -W 4:00
-#BSUB -J petra_stage1_geometry
-#BSUB -o /zhome/81/b/206091/Petra-Phase1/logs/lsf_stage1_geometry.log
-#BSUB -e /zhome/81/b/206091/Petra-Phase1/logs/lsf_stage1_geometry.err
+#BSUB -J petra_stage2_geometry
+#BSUB -o /zhome/81/b/206091/Petra-Phase1/logs/lsf_stage2_geometry.log
+#BSUB -e /zhome/81/b/206091/Petra-Phase1/logs/lsf_stage2_geometry.err
 
 cd /zhome/81/b/206091/Petra-Phase1
 
-echo "=== Stage 1: KQ vs K geometry curriculum ==="
+echo "=== Stage 2: KR vs K geometry curriculum ==="
 
 echo "--- Training with antipodal loss (per-epoch position regeneration) ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/train.py \
-  --out models/geometry/stage1 \
+  --out models/geometry/stage2 \
   --epochs 80 \
   --patience 15 \
   --tight-patience 3 \
@@ -24,8 +24,8 @@ echo "--- Training with antipodal loss (per-epoch position regeneration) ---"
   --antipodal-margin 0.0 \
   --policy-weight 0.0 \
   --endgame-positions 10000 \
-  --endgame-stage 1
+  --endgame-stage 2
 
 echo "--- Geometry probe ---"
 /zhome/81/b/206091/petra-env/bin/python3 src/test_geometry.py \
-  --model models/geometry/stage1/best.pt
+  --model models/geometry/stage2/best.pt
