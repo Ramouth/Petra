@@ -10,16 +10,12 @@
 
 cd /zhome/81/b/206091/Petra-Phase1
 
-echo "=== Stage 3: mixed endgame curriculum (stages 1-8), STM-aware ==="
-# Fresh start — stage2 was trained with STM bug (all positions White to move).
-# Fixes in this run:
-#   - generate_endgame: ~50/50 White/Black to move, STM-relative labels
-#   - antipodal loss: turn-flip (same position, opposite STM) instead of
-#     color-flip (flipped colors had same label, contradicting antipodal constraint)
-#   - geometry_value: negates projection for Black to move in evaluate.py
-#
-# Dataset is ~2x larger per epoch due to turn-flip variants (~64k positions).
-# Reduce --endgame-positions to 8000 to keep epoch size comparable to stage2.
+echo "=== Stage 3: STM-sign architecture fix, fresh weights, stages 1-8 ==="
+# Single architecture change: _piece_geometry now multiplies by STM sign
+#   stm_sign = (board[:, 12, 0, 0] * 2 - 1)  →  +1 White to move, -1 Black
+# This makes geometry STM-relative by construction, making the antipodal
+# constraint achievable. No --init-model: stage2 weights are incompatible
+# (value head calibrated against unsigned geometry).
 #
 # 1: KQK   2: KRK   3: KPK        — who has piece wins
 # 4: KQvKR 5: KRvKP               — stronger piece wins (fixes Q>R ordering)
@@ -35,7 +31,7 @@ echo "=== Stage 3: mixed endgame curriculum (stages 1-8), STM-aware ==="
   --antipodal-weight 1.0 \
   --antipodal-margin 0.0 \
   --policy-weight 0.0 \
-  --endgame-positions 8000 \
+  --endgame-positions 16000 \
   --endgame-stages 1 2 3 4 5 6 7 8
 
 echo "--- Geometry probe ---"

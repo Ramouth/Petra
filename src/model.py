@@ -103,7 +103,8 @@ class PetraNet(nn.Module):
         """
         piece_mask = board[:, :12, :, :].sum(dim=1, keepdim=True)  # (B, 1, 8, 8)
         g = (feat * piece_mask).sum(dim=(-2, -1))                   # (B, channels)
-        return self.geo_proj(g)                                      # (B, bottleneck_dim)
+        stm_sign = (board[:, 12, 0, 0] * 2 - 1).unsqueeze(1)       # +1 White, -1 Black
+        return self.geo_proj(g) * stm_sign                          # (B, bottleneck_dim)
 
     def forward(self, board: torch.Tensor):
         """
