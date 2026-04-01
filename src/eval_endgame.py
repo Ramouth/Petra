@@ -36,7 +36,7 @@ from model import PetraNet
 from mcts import MCTS
 from board import board_to_tensor
 from config import device
-from evaluate import material_value, make_geometry_value_fn, RandomAgent, MCTSAgent
+from evaluate import material_value, RandomAgent
 from generate_endgame import random_kqk_position, random_krk_position, random_kpk_position
 
 
@@ -85,7 +85,7 @@ def _generate_positions_simple(n: int, stages: list, seed: int = 42) -> list:
 def _conversion_worker(args):
     """
     Play one endgame conversion game.
-    White = agent under test (geometry or material MCTS).
+    White = agent under test (learned value or material MCTS).
     Black = RandomAgent (bare king, just shuffles).
 
     Returns dict with outcome info.
@@ -96,10 +96,9 @@ def _conversion_worker(args):
     model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
     model.eval()
 
-    if agent_type == "geometry":
-        value_fn = make_geometry_value_fn(model)
-    else:
-        value_fn = material_value
+    # learned: use model.value() — the full CNN → geometry → value head pipeline
+    # material: hardcoded piece counts, no neural network
+    value_fn = None if agent_type == "learned" else material_value
 
     mcts = MCTS(model, torch.device("cpu"), value_fn=value_fn)
     black = RandomAgent(seed=seed)
@@ -146,9 +145,9 @@ def run_conversion_eval(model_path: str, positions: list,
     Run geometry-MCTS and material-MCTS on the same positions.
     Returns comparison stats.
     """
-    results = {"geometry": [], "material": []}
+    results = {"learned": [], "material": []}
 
-    for agent_type in ("geometry", "material"):
+    for agent_type in ("learned", "material"):
         args_list = [
             (i, fen, stage, model_path, agent_type, n_sim, max_moves, i + 1000)
             for i, (fen, stage) in enumerate(positions)
@@ -207,7 +206,7 @@ def print_results(results: dict, stages: list):
 
     for stage in stages:
         _, label = _STAGE_GEN[stage]
-        for agent in ("geometry", "material"):
+        for agent in ("learned", "material"):
             s = _stage_stats(results[agent], stage)
             if s is None:
                 continue
@@ -221,30 +220,30 @@ def print_results(results: dict, stages: list):
 
     # Overall verdict
     print("=" * 62)
-    geo_all = results["geometry"]
-    mat_all = results["material"]
-    geo_mate_rate = sum(1 for r in geo_all if r["result"] == "mate") / len(geo_all)
-    mat_mate_rate = sum(1 for r in mat_all if r["result"] == "mate") / len(mat_all)
-    delta = geo_mate_rate - mat_mate_rate
+    learned_all = results["learned"]
+    mat_all     = results["material"]
+    learned_rate = sum(1 for r in learned_all if r["result"] == "mate") / len(learned_all)
+    mat_rate     = sum(1 for r in mat_all     if r["result"] == "mate") / len(mat_all)
+    delta = learned_rate - mat_rate
 
-    geo_moves = [r["n_moves"] for r in geo_all if r["result"] == "mate"]
-    mat_moves = [r["n_moves"] for r in mat_all if r["result"] == "mate"]
-    geo_avg = sum(geo_moves) / len(geo_moves) if geo_moves else None
-    mat_avg = sum(mat_moves) / len(mat_moves) if mat_moves else None
+    learned_moves = [r["n_moves"] for r in learned_all if r["result"] == "mate"]
+    mat_moves     = [r["n_moves"] for r in mat_all     if r["result"] == "mate"]
+    learned_avg = sum(learned_moves) / len(learned_moves) if learned_moves else None
+    mat_avg     = sum(mat_moves)     / len(mat_moves)     if mat_moves     else None
 
-    print(f"  Overall mate rate:  geometry={geo_mate_rate*100:.1f}%  "
-          f"material={mat_mate_rate*100:.1f}%  Δ={delta*100:+.1f}%")
-    if geo_avg and mat_avg:
-        print(f"  Average moves:     geometry={geo_avg:.1f}  "
-              f"material={mat_avg:.1f}  Δ={geo_avg-mat_avg:+.1f}")
+    print(f"  Overall mate rate:  learned={learned_rate*100:.1f}%  "
+          f"material={mat_rate*100:.1f}%  Δ={delta*100:+.1f}%")
+    if learned_avg and mat_avg:
+        print(f"  Average moves:     learned={learned_avg:.1f}  "
+              f"material={mat_avg:.1f}  Δ={learned_avg-mat_avg:+.1f}")
     print("=" * 62)
 
     if delta > 0.05:
-        print("\n  GEOMETRY CONVERTS BETTER — geometry drives endgame play.")
+        print("\n  MODEL CONVERTS BETTER — learned value drives endgame play.")
     elif delta > -0.05:
-        print("\n  GEOMETRY COMPARABLE — similar conversion rate to material.")
+        print("\n  MODEL COMPARABLE — similar conversion rate to material.")
     else:
-        print("\n  GEOMETRY WORSE — geometry does not drive endgame conversion.")
+        print("\n  MODEL WORSE — learned value does not drive endgame conversion.")
 
 
 # ---------------------------------------------------------------------------
