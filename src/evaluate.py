@@ -125,6 +125,8 @@ def make_geometry_value_fn(model: PetraNet) -> Callable:
     def geometry_value(board: chess.Board) -> float:
         g = _geo_vec(model, board)
         proj = float(np.dot(g, axis))
+        if board.turn == chess.BLACK:
+            proj = -proj
         return math.tanh(proj)
 
     return geometry_value

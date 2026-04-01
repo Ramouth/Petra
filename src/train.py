@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model import PetraNet
-from board import flip_board_tensor
+from board import flip_turn_tensor
 from config import device
 
 
@@ -140,7 +140,7 @@ def antipodal_loss(model, tensors: torch.Tensor,
 
     L = mean(max(0, cos(g, g_flip) + margin)) + mean(max(0, min_norm - ||g||)^2)
     """
-    t_flip = flip_board_tensor(tensors)
+    t_flip = flip_turn_tensor(tensors)
     g      = model.geometry(tensors)
     g_flip = model.geometry(t_flip)
 

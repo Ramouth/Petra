@@ -80,6 +80,24 @@ def flip_board_tensor(t: torch.Tensor) -> torch.Tensor:
     return f
 
 
+def flip_turn_tensor(t: torch.Tensor) -> torch.Tensor:
+    """
+    Flip only the side-to-move plane of a (..., 14, 8, 8) board tensor.
+
+    Produces the same position with the opposite side to move.
+    Used for the antipodal loss: under STM-relative labels, a position and
+    its turn-flip have opposite labels (+1 / -1), so their geometry vectors
+    should point in opposite directions. This is consistent — unlike
+    flip_board_tensor, whose color-flipped partner has the SAME STM-relative
+    label (+1 both), creating a contradiction with the antipodal constraint.
+
+    Works on single tensors (14, 8, 8) and batches (N, 14, 8, 8).
+    """
+    f = t.clone()
+    f[..., 12, :, :] = 1.0 - t[..., 12, :, :]
+    return f
+
+
 def outcome_to_value(result: str, turn: chess.Color) -> float:
     """
     Convert a PGN result string to a value from the perspective of `turn`.

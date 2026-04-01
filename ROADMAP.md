@@ -367,18 +367,57 @@ ROADMAP geometry milestone: *Win/loss centroid cosine < 0.70* — **CLEARED** (0
 
 Stage 1 model: `models/geometry/stage1/best.pt`
 
-Step 6 evaluation (100 games, geometry MCTS vs material MCTS) running/pending — this is the first test of whether the geometry actually steers play, not just separates in probe space.
+Step 6 evaluation was not run on Stage 1. Stage 1 model was used as the initialisation for Stage 2.
 
 Stage 2 will run once HPC is back. Stage 2 uses random KRK positions + antipodal loss (same structure as Stage 1), initiating from Stage 1 weights. **Important caveat:** random positions + antipodal loss trains geometry to *separate*. Geometry as a play driver requires selfplay with geometry MCTS. That loop becomes available once step 6 results confirm geometry MCTS is viable.
 
 **GPU trigger:** 3 stages of geometry improvement → plan GPU migration for batched MCTS + larger model.
 
+---
+
+## Session 9 — Stage 2 Endgame Curriculum (2026-04-01)
+
+### Stage 2: mixed endgame curriculum (stages 1–8)
+
+Curriculum: KQK, KRK, KPK, KQvKR, KRvKP, KBvKP, KNvKP, KPvKP balanced.
+16k positions/epoch + mirrors. 28,800 train / 3,200 val. Early stopping at epoch 22 (best at epoch 2).
+
+| Metric | Stage 1 | Stage 2 |
+|---|---|---|
+| Best val loss | — | 0.0168 (epoch 2) |
+| Centroid cosine | 0.1753 | **-0.2193** |
+| Color flip symmetry | PASS | **FAIL** (mean cosine +0.326) |
+| KQ vs K, Black to move | pending | **+0.999 (wrong — should be negative)** |
+| Geometry tests passed | — | **1/5** (transposition only) |
+| R > B/N ordering | — | FAIL (rook undervalued) |
+
+### Step 6 — first geometry MCTS eval
+
+**W=4 D=71 L=25. Score 39.5%. ELO Δ = -74. FAIL.**
+
+Geometry MCTS is *worse* than material heuristic. Geometry is not steering play.
+
+### Diagnosis
+
+Centroid separation improved (-0.2193 < 0.1753 = good) but the geometry is not perspective-aware. The model knows "the KQ side is winning" but not "from whose perspective." KQ vs K with Black to move returns +0.999 — the model ignores side-to-move entirely for evaluation. This is the same passenger problem as the R-rounds, now appearing at the representation level.
+
+Root causes:
+1. **Antipodal loss not strong enough** — loss plateau at ~0.14, never drove perspective separation. Weight=1.0 is insufficient against the value signal in a mixed curriculum.
+2. **Rook undervaluation** — curriculum has Q>R (stage 4) and R>P (stage 5) but nothing for R vs minor pieces. Result: B ≈ N > Q > R.
+3. **No KRvKB or KRvKN stages** — rook cannot learn to dominate minor pieces.
+
+### Decision
+
+Do not start geometry MCTS selfplay loop — broken antipodal structure will propagate and reinforce the passenger problem. Fix antipodal symmetry first.
+
 ## Next
 
-1. Step 6 eval results — does geometry MCTS beat material MCTS on Stage 1 model?
-2. Submit Stage 2 (KR vs K) on HPC when back up
-3. If Stage 2 centroid cosine < 0.4: begin geometry MCTS selfplay loop for Stage 3+
-4. After 3 stages confirmed: GPU migration plan
+1. Diagnose whether antipodal failure is an **input encoding issue** (side-to-move plane missing or not used) or a **loss weight issue**
+2. Check `src/model.py` and board feature encoding for side-to-move plane
+3. Stage 3 options:
+   - Higher antipodal weight (5–10) with same curriculum
+   - Add KRvKB and KRvKN stages (fix rook ordering)
+   - Investigate side-to-move encoding in board tensor
 
 ---
 
@@ -400,7 +439,7 @@ Stage 2 will run once HPC is back. Stage 2 uses random KRK positions + antipodal
 - [ ] Separation gap > 0.10 — *currently 0.048–0.057 (R-rounds); Stage 1 not yet measured*
 - [ ] KQ vs K AND K vs KQ both correct — *K vs KQ never correct in R-rounds; Stage 1 pending full probe*
 - [ ] Dead dimensions < 5/128 — *R-rounds: 26/128; Stage 1 Tanh removes dead dim problem structurally*
-- [ ] Geometry MCTS beats material MCTS — *step 6 eval pending*
+- [ ] Geometry MCTS beats material MCTS — *Stage 2: 39.5% FAIL (ELO -74)*
 
 ### Self-play
 - [x] 1k self-play positions trained

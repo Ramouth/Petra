@@ -307,11 +307,24 @@ def generate_positions(n: int, include_mirrors: bool = True, stages=None):
                 continue
             seen_fens.add(fen)
 
+            # White to move: STM=White wins → +1.0
             all_positions.append((board, +1.0))
+            # Same position, Black to move: STM=Black loses → -1.0
+            board_btm = board.copy()
+            board_btm.turn = chess.BLACK
+            if board_btm.is_valid() and not board_btm.is_game_over():
+                all_positions.append((board_btm, -1.0))
             generated += 1
 
             if include_mirrors:
-                all_positions.append((mirror_fn(), -1.0))
+                mirror = mirror_fn()
+                # White to move: STM=White loses → -1.0
+                all_positions.append((mirror, -1.0))
+                # Same mirror position, Black to move: STM=Black wins → +1.0
+                mirror_btm = mirror.copy()
+                mirror_btm.turn = chess.BLACK
+                if mirror_btm.is_valid() and not mirror_btm.is_game_over():
+                    all_positions.append((mirror_btm, +1.0))
 
     random.shuffle(all_positions)
     return all_positions
