@@ -79,9 +79,7 @@ class PetraNet(nn.Module):
         )
 
         self.value_head = nn.Sequential(
-            nn.Linear(bottleneck_dim, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1),
+            nn.Linear(bottleneck_dim, 1),
             nn.Tanh(),
         )
 
