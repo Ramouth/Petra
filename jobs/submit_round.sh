@@ -34,16 +34,17 @@ mkdir -p "$LOGS" "$DATA" "$MODELS/r${ROUND}"
 # Round parameters
 # ---------------------------------------------------------------------------
 case $ROUND in
-  1) N_SIM=50;  SF_DEPTH=15; N_GAMES=300; LR=1e-3; EPOCHS=20; PATIENCE=5 ;;
-  2) N_SIM=100; SF_DEPTH=15; N_GAMES=400; LR=5e-4; EPOCHS=20; PATIENCE=5 ;;
-  3) N_SIM=200; SF_DEPTH=18; N_GAMES=500; LR=3e-4; EPOCHS=15; PATIENCE=5 ;;
-  4) N_SIM=400; SF_DEPTH=20; N_GAMES=500; LR=1e-4; EPOCHS=15; PATIENCE=5 ;;
-  5) N_SIM=400; SF_DEPTH=20; N_GAMES=500; LR=5e-5; EPOCHS=15; PATIENCE=5 ;;
-  6) N_SIM=400; SF_DEPTH=22; N_GAMES=500; LR=2e-5; EPOCHS=15; PATIENCE=5 ;;
+  #          n_sim  depth  games   lr     ep  pat  sp_wall  rv_wall  gate_wall
+  1) N_SIM=50;  SF_DEPTH=15; N_GAMES=300; LR=1e-3; EPOCHS=20; PATIENCE=5; W_SP=2:00; W_RV=2:00; W_GT=2:00 ;;
+  2) N_SIM=100; SF_DEPTH=15; N_GAMES=400; LR=5e-4; EPOCHS=20; PATIENCE=5; W_SP=2:00; W_RV=2:00; W_GT=2:00 ;;
+  3) N_SIM=200; SF_DEPTH=18; N_GAMES=500; LR=3e-4; EPOCHS=15; PATIENCE=5; W_SP=4:00; W_RV=4:00; W_GT=4:00 ;;
+  4) N_SIM=400; SF_DEPTH=20; N_GAMES=500; LR=1e-4; EPOCHS=15; PATIENCE=5; W_SP=6:00; W_RV=6:00; W_GT=6:00 ;;
+  5) N_SIM=400; SF_DEPTH=20; N_GAMES=500; LR=5e-5; EPOCHS=15; PATIENCE=5; W_SP=6:00; W_RV=6:00; W_GT=6:00 ;;
+  6) N_SIM=400; SF_DEPTH=22; N_GAMES=500; LR=2e-5; EPOCHS=15; PATIENCE=5; W_SP=6:00; W_RV=8:00; W_GT=6:00 ;;
   *) echo "Unknown round: $ROUND (supported: 1-6)"; exit 1 ;;
 esac
 
-WORKERS=32
+WORKERS=16
 SELFPLAY_PT="$DATA/selfplay_r${ROUND}.pt"
 SF_PT="$DATA/selfplay_r${ROUND}_sf.pt"
 OUT_MODEL="$MODELS/r${ROUND}"
@@ -137,7 +138,7 @@ cat > "$SP_SCRIPT" << SCRIPT
 #BSUB -n $WORKERS
 #BSUB -R "span[hosts=1] rusage[mem=4GB]"
 #BSUB -M 4GB
-#BSUB -W 4:00
+#BSUB -W $W_SP
 #BSUB -J petra_r${ROUND}_selfplay
 #BSUB -o $LOGS/lsf_r${ROUND}_selfplay.log
 #BSUB -e $LOGS/lsf_r${ROUND}_selfplay.err
@@ -174,7 +175,7 @@ cat > "$REEVAL_SCRIPT" << SCRIPT
 #BSUB -n 1
 #BSUB -R "rusage[mem=4GB]"
 #BSUB -M 4GB
-#BSUB -W 2:00
+#BSUB -W $W_RV
 #BSUB -J petra_r${ROUND}_reeval
 #BSUB -o $LOGS/lsf_r${ROUND}_reeval.log
 #BSUB -e $LOGS/lsf_r${ROUND}_reeval.err
@@ -282,7 +283,7 @@ cat > "$GATE_SCRIPT" << SCRIPT
 #BSUB -n $WORKERS
 #BSUB -R "span[hosts=1] rusage[mem=2GB]"
 #BSUB -M 2GB
-#BSUB -W 4:00
+#BSUB -W $W_GT
 #BSUB -J petra_r${ROUND}_gate
 #BSUB -o $LOGS/lsf_r${ROUND}_gate.log
 #BSUB -e $LOGS/lsf_r${ROUND}_gate.err
