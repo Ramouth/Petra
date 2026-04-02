@@ -55,7 +55,10 @@ def win_projection(g: np.ndarray, c_win: np.ndarray, c_loss: np.ndarray) -> floa
 
 
 def color_flip(board: chess.Board) -> chess.Board:
-    """Return the board with colors swapped (mirror position)."""
+    """Return the board with colors swapped (mirror position).
+    Under STM-relative geometry, mirror preserves the label (+1 for STM in both
+    cases), so mirrored positions should have SIMILAR geometry, not antipodal.
+    """
     return board.mirror()
 
 
@@ -177,46 +180,48 @@ def test_piece_value_ordering(model: PetraNet, c_win: np.ndarray, c_loss: np.nda
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Color flip symmetry
+# Test 3: STM symmetry
 # ---------------------------------------------------------------------------
 
-def test_color_flip_symmetry(model: PetraNet):
+def test_stm_symmetry(model: PetraNet, c_win: np.ndarray, c_loss: np.ndarray):
     print("\n" + "="*60)
-    print("TEST 3 — Color flip symmetry")
-    print("  Flipping colors should negate the geometry (antipodal).")
-    print("  Dot product of g and flip(g) should be close to -1.")
+    print("TEST 3 — STM symmetry")
+    print("  Winning from white's POV and winning from black's POV")
+    print("  should look the same in geometry (both = STM winning).")
+    print("  board.mirror() swaps colors+STM, preserving STM label.")
+    print("  Win-projections for each pair should both be positive and similar.")
     print("="*60)
 
-    positions = [
-        ("KQ vs K (white winning)",  chess.Board("4k3/8/8/8/8/8/8/4K2Q w - - 0 1")),
-        ("White up rook",            chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
-        ("White up two pawns",       chess.Board("4k3/8/8/8/8/8/PPP5/4K3 w - - 0 1")),
-        ("Equal (KR vs KR)",         chess.Board("r3k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
-        ("Starting position",        chess.Board()),
+    # Each tuple: (white-to-move position, its mirror = black-to-move with same advantage)
+    pairs = [
+        ("KQ vs K",       chess.Board("4k3/8/8/8/8/8/8/4K2Q w - - 0 1")),
+        ("Up rook",       chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
+        ("Up bishop",     chess.Board("4k3/8/8/8/8/8/8/2B1K3 w - - 0 1")),
+        ("Up two pawns",  chess.Board("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1")),
     ]
 
-    print(f"\n  {'Position':<30}  {'dot(g, flip(g))':>15}  {'cosine sim':>10}  result")
-    print(f"  {'-'*30}  {'-'*15}  {'-'*10}  ------")
+    print(f"\n  {'Position':<14}  {'proj(white)':>11}  {'proj(mirror)':>12}  {'delta':>7}  result")
+    print(f"  {'-'*14}  {'-'*11}  {'-'*12}  {'-'*7}  ------")
 
     results = []
-    for label, board in positions:
+    for label, board in pairs:
         g      = geo(model, board)
-        g_flip = geo(model, color_flip(board))
-        dot    = float(np.dot(g, g_flip))
-        norm_g      = np.linalg.norm(g)
-        norm_g_flip = np.linalg.norm(g_flip)
-        cos    = dot / (norm_g * norm_g_flip + 1e-8)
-        # Perfect antipodal = cos -1.0, same direction = +1.0
-        ok = cos < -0.3   # loose threshold — geometry doesn't need to be perfect
-        status = PASS if cos < -0.5 else (WARN if cos < 0.0 else FAIL)
-        results.append(cos)
-        print(f"  {label:<30}  {dot:>+15.4f}  {cos:>+10.4f}  {status}")
+        g_flip = geo(model, color_flip(board))   # mirror: same advantage, black STM
+        p      = win_projection(g,      c_win, c_loss)
+        p_flip = win_projection(g_flip, c_win, c_loss)
+        delta  = abs(p - p_flip)
+        # Both should be positive (STM winning) and similar in magnitude
+        both_positive = p > 0 and p_flip > 0
+        ok = both_positive and delta < abs(p) * 0.5   # within 50% of each other
+        status = PASS if ok else (WARN if both_positive else FAIL)
+        results.append(ok)
+        print(f"  {label:<14}  {p:>+11.4f}  {p_flip:>+12.4f}  {delta:>7.4f}  {status}")
 
-    mean_cos = np.mean(results)
-    overall = PASS if mean_cos < -0.3 else (WARN if mean_cos < 0.0 else FAIL)
-    print(f"\n  Mean cosine similarity: {mean_cos:+.4f}  →  {overall}")
-    print(f"  (Perfect antipodal = -1.0, uncorrelated = 0.0, same = +1.0)")
-    return mean_cos < -0.3
+    passed = sum(results)
+    overall = PASS if passed == len(results) else (WARN if passed >= len(results) // 2 else FAIL)
+    print(f"\n  Passed: {passed}/{len(results)}  →  {overall}")
+    print(f"  (Both projections should be positive and similar — geometry is STM-relative, not white-biased)")
+    return passed == len(results)
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +360,7 @@ def main():
     results = {}
     results["Material monotonicity"]     = test_material_monotonicity(model, c_win, c_loss)
     results["Piece value ordering"]      = test_piece_value_ordering(model, c_win, c_loss)
-    results["Color flip symmetry"]       = test_color_flip_symmetry(model)
+    results["STM symmetry"]               = test_stm_symmetry(model, c_win, c_loss)
     results["Forced mate convergence"]   = test_forced_mate_convergence(model, c_win, c_loss)
     results["Transposition consistency"] = test_transposition_consistency(model)
 

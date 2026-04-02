@@ -19,7 +19,7 @@ at each square contributes. Nothing is hand-engineered: queen vectors will
 be stronger than pawn vectors because the training outcomes demand it, not
 because we told the model. Hidden geometry can emerge freely.
 
-Value head:  Linear(128 → 64) + Tanh + Linear(64 → 1) + Tanh
+Value head:  Linear(128 → 1) + Tanh  (thin — geometry must carry the representation)
 Policy head: Linear(128 → 4096)  [logits over all 64×64 from/to pairs]
 
 Value convention: +1 = current side to move wins.

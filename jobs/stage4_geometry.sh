@@ -1,6 +1,6 @@
 #!/bin/sh
 #BSUB -q hpc
-#BSUB -n 8
+#BSUB -n 2
 #BSUB -R "span[hosts=1] rusage[mem=8GB]"
 #BSUB -M 8GB
 #BSUB -W 6:00
