@@ -42,7 +42,7 @@ from mcts import MCTS, DRAW_VALUE
 # ---------------------------------------------------------------------------
 
 SKIP_OPENING_MOVES   = 8    # skip first N half-moves (opening theory)
-MAX_POSITIONS_PER_GAME = 12 # sample up to this many positions per game
+MAX_POSITIONS_PER_GAME = 50 # sample up to this many positions per game
 MAX_HALF_MOVES       = 200  # draw if game reaches this length
 RESIGN_THRESHOLD     = 0.95 # default — overridden by --resign-threshold CLI arg
 RESIGN_CONSECUTIVE   = 10   # default — overridden by --resign-consecutive CLI arg
