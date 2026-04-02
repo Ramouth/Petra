@@ -10,7 +10,7 @@ Tests
 -----
   1. Material monotonicity   — adding stronger pieces moves geometry toward win
   2. Piece value ordering    — Q > R > B ≈ N > P in geometry projection
-  3. Color flip symmetry     — flipping colors should negate geometry (antipodal)
+  3. Antipodal symmetry      — g(pos) ≈ -g(color_flip(pos)) (STM-sign fix makes this achievable)
   4. Forced mate convergence — as mate approaches, win projection increases
   5. Transposition consistency — same position via different move orders = same geometry
 
@@ -29,7 +29,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model import PetraNet
+from model import PetraNet, ConvBlock, ResBlock
 from board import board_to_tensor
 from config import device
 
@@ -180,48 +180,45 @@ def test_piece_value_ordering(model: PetraNet, c_win: np.ndarray, c_loss: np.nda
 
 
 # ---------------------------------------------------------------------------
-# Test 3: STM symmetry
+# Test 3: Antipodal symmetry
 # ---------------------------------------------------------------------------
 
-def test_stm_symmetry(model: PetraNet, c_win: np.ndarray, c_loss: np.ndarray):
+def test_antipodal_symmetry(model: PetraNet):
     print("\n" + "="*60)
-    print("TEST 3 — STM symmetry")
-    print("  Winning from white's POV and winning from black's POV")
-    print("  should look the same in geometry (both = STM winning).")
-    print("  board.mirror() swaps colors+STM, preserving STM label.")
-    print("  Win-projections for each pair should both be positive and similar.")
+    print("TEST 3 — Antipodal symmetry")
+    print("  Flipping colors should negate the geometry vector.")
+    print("  With the STM-sign fix, g(pos) ≈ -g(color_flip(pos)) by construction.")
+    print("  cosine_sim(g, g_flip) should be close to -1.")
     print("="*60)
 
-    # Each tuple: (white-to-move position, its mirror = black-to-move with same advantage)
-    pairs = [
-        ("KQ vs K",       chess.Board("4k3/8/8/8/8/8/8/4K2Q w - - 0 1")),
-        ("Up rook",       chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
-        ("Up bishop",     chess.Board("4k3/8/8/8/8/8/8/2B1K3 w - - 0 1")),
-        ("Up two pawns",  chess.Board("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1")),
+    positions = [
+        ("KQ vs K (white winning)", chess.Board("4k3/8/8/8/8/8/8/4K2Q w - - 0 1")),
+        ("Up rook",                 chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
+        ("Up two pawns",            chess.Board("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1")),
+        ("Equal (KR vs KR)",        chess.Board("r3k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
+        ("Starting position",       chess.Board()),
     ]
 
-    print(f"\n  {'Position':<14}  {'proj(white)':>11}  {'proj(mirror)':>12}  {'delta':>7}  result")
-    print(f"  {'-'*14}  {'-'*11}  {'-'*12}  {'-'*7}  ------")
+    print(f"\n  {'Position':<26}  {'dot(g,flip(g))':>14}  {'cosine sim':>10}  result")
+    print(f"  {'-'*26}  {'-'*14}  {'-'*10}  ------")
 
-    results = []
-    for label, board in pairs:
+    cos_sims = []
+    for label, board in positions:
         g      = geo(model, board)
-        g_flip = geo(model, color_flip(board))   # mirror: same advantage, black STM
-        p      = win_projection(g,      c_win, c_loss)
-        p_flip = win_projection(g_flip, c_win, c_loss)
-        delta  = abs(p - p_flip)
-        # Both should be positive (STM winning) and similar in magnitude
-        both_positive = p > 0 and p_flip > 0
-        ok = both_positive and delta < abs(p) * 0.5   # within 50% of each other
-        status = PASS if ok else (WARN if both_positive else FAIL)
-        results.append(ok)
-        print(f"  {label:<14}  {p:>+11.4f}  {p_flip:>+12.4f}  {delta:>7.4f}  {status}")
+        g_flip = geo(model, color_flip(board))
+        dot    = float(np.dot(g, g_flip))
+        cos    = cosine_sim(g, g_flip)
+        cos_sims.append(cos)
+        ok = cos < -0.5
+        status = PASS if ok else (WARN if cos < 0.0 else FAIL)
+        print(f"  {label:<26}  {dot:>+14.4f}  {cos:>+10.4f}  {status}")
 
-    passed = sum(results)
-    overall = PASS if passed == len(results) else (WARN if passed >= len(results) // 2 else FAIL)
-    print(f"\n  Passed: {passed}/{len(results)}  →  {overall}")
-    print(f"  (Both projections should be positive and similar — geometry is STM-relative, not white-biased)")
-    return passed == len(results)
+    mean_cos = float(np.mean(cos_sims))
+    overall_ok = mean_cos < -0.5
+    overall = PASS if overall_ok else (WARN if mean_cos < 0.0 else FAIL)
+    print(f"\n  Mean cosine similarity: {mean_cos:.4f}  →  {overall}")
+    print(f"  (Perfect antipodal = -1.0, uncorrelated = 0.0, same = +1.0)")
+    return overall_ok
 
 
 # ---------------------------------------------------------------------------
@@ -341,13 +338,68 @@ def print_summary(results: dict):
 # Main
 # ---------------------------------------------------------------------------
 
+class LegacyPetraNet(torch.nn.Module):
+    """
+    Pre-per-piece-geometry architecture (flat bottleneck, no STM-sign fix).
+    Used to load checkpoints trained before commit f52b962 (e.g. zigzag r1/r2).
+    Keys: bottleneck.1 = Linear(4096→128), value_head.0/2 = Linear, policy_head = Linear(128→4096).
+    """
+    def __init__(self, channels: int = 64, bottleneck_dim: int = 128):
+        super().__init__()
+        self.input_block = ConvBlock(14, channels)
+        self.res_blocks  = torch.nn.Sequential(*[ResBlock(channels) for _ in range(4)])
+        self.bottleneck  = torch.nn.Sequential(
+            torch.nn.Flatten(),
+            torch.nn.Linear(channels * 8 * 8, bottleneck_dim),
+            torch.nn.Tanh(),
+        )
+        self.value_head  = torch.nn.Sequential(
+            torch.nn.Linear(bottleneck_dim, 64),
+            torch.nn.Tanh(),
+            torch.nn.Linear(64, 1),
+            torch.nn.Tanh(),
+        )
+        self.policy_head = torch.nn.Linear(bottleneck_dim, 64 * 64)
+
+    def forward(self, x):
+        x = self.input_block(x)
+        x = self.res_blocks(x)
+        g = self.bottleneck(x)
+        return self.value_head(g), self.policy_head(g)
+
+    def geometry(self, x):
+        with torch.no_grad():
+            x = self.input_block(x)
+            x = self.res_blocks(x)
+            return self.bottleneck(x)
+
+    @torch.no_grad()
+    def value(self, board: chess.Board, device: torch.device) -> float:
+        self.eval()
+        t = board_to_tensor(board).unsqueeze(0).float().to(device)
+        v, _ = self.forward(t)
+        return v.item()
+
+
+def _load_model(path: str):
+    """Load a model checkpoint, auto-detecting legacy vs current architecture."""
+    sd = torch.load(path, map_location=device, weights_only=True)
+    if "bottleneck.1.weight" in sd:
+        model = LegacyPetraNet()
+    else:
+        model = PetraNet()
+    model.load_state_dict(sd)
+    model.to(device)
+    model.eval()
+    return model
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="Path to model .pt")
     args = ap.parse_args()
 
-    model = PetraNet().to(device)
-    model.load_state_dict(torch.load(args.model, map_location=device, weights_only=True))
+    model = _load_model(args.model)
     model.eval()
     print(f"Loaded: {args.model}")
 
@@ -360,7 +412,7 @@ def main():
     results = {}
     results["Material monotonicity"]     = test_material_monotonicity(model, c_win, c_loss)
     results["Piece value ordering"]      = test_piece_value_ordering(model, c_win, c_loss)
-    results["STM symmetry"]               = test_stm_symmetry(model, c_win, c_loss)
+    results["Antipodal symmetry"]          = test_antipodal_symmetry(model)
     results["Forced mate convergence"]   = test_forced_mate_convergence(model, c_win, c_loss)
     results["Transposition consistency"] = test_transposition_consistency(model)
 

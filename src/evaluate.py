@@ -311,6 +311,11 @@ def _game_worker(args):
         a_is_white = (game_idx % 2 == 0)
         outcome = "win" if (result == "1-0") == a_is_white else "loss"
 
+    board_outcome = board.outcome()
+    is_checkmate = (board_outcome is not None and
+                    board_outcome.termination == chess.Termination.CHECKMATE)
+    white_mated = is_checkmate and board_outcome.winner == chess.WHITE  # white delivered mate
+
     pgn_str = None
     if record_pgn:
         game = chess.pgn.Game()
@@ -320,6 +325,8 @@ def _game_worker(args):
         board_outcome = board.outcome()
         if board_outcome is not None:
             game.headers["Termination"] = board_outcome.termination.name
+            if board_outcome.termination == chess.Termination.CHECKMATE:
+                game.headers["Mated"] = "Black" if board_outcome.winner == chess.WHITE else "White"
         else:
             game.headers["Termination"] = "move_limit"
         game.headers["PlyCount"] = str(len(board.move_stack))
@@ -332,7 +339,7 @@ def _game_worker(args):
         print(game, file=buf)
         pgn_str = buf.getvalue()
 
-    return outcome, pgn_str
+    return outcome, pgn_str, is_checkmate, white_mated
 
 
 def run_match(agent_a: Agent, agent_b: Agent,
@@ -354,6 +361,7 @@ def run_match(agent_a: Agent, agent_b: Agent,
         n_games += 1   # ensure equal colours
 
     wins = draws = losses = 0
+    white_mates = black_mates = 0
     t0 = time.time()
     report_every = max(1, n_games // 10)
 
@@ -365,14 +373,19 @@ def run_match(agent_a: Agent, agent_b: Agent,
 
     pgn_file = open(pgn_out, "w") if pgn_out else None
 
-    def _record(outcome, pgn_str, i):
-        nonlocal wins, draws, losses
+    def _record(outcome, pgn_str, is_checkmate, white_mated, i):
+        nonlocal wins, draws, losses, white_mates, black_mates
         if outcome == "draw":
             draws += 1
         elif outcome == "win":
             wins += 1
         else:
             losses += 1
+        if is_checkmate:
+            if white_mated:
+                white_mates += 1
+            else:
+                black_mates += 1
         if pgn_file and pgn_str:
             pgn_file.write(pgn_str + "\n")
             pgn_file.flush()
@@ -381,27 +394,32 @@ def run_match(agent_a: Agent, agent_b: Agent,
             wr = (wins + 0.5 * draws) / total
             print(f"  [{i+1:>4}/{n_games}]  "
                   f"W={wins} D={draws} L={losses}  "
-                  f"wr={wr:.3f}  ({time.time()-t0:.0f}s)")
+                  f"wr={wr:.3f}  "
+                  f"(wm={white_mates} bm={black_mates})  "
+                  f"({time.time()-t0:.0f}s)")
 
     try:
         if workers > 1:
             ctx = mp.get_context("spawn")
             with ctx.Pool(processes=workers) as pool:
-                for i, (outcome, pgn_str) in enumerate(pool.imap(_game_worker, args_list)):
-                    _record(outcome, pgn_str, i)
+                for i, (outcome, pgn_str, is_checkmate, white_mated) in enumerate(
+                        pool.imap(_game_worker, args_list)):
+                    _record(outcome, pgn_str, is_checkmate, white_mated, i)
         else:
             for i, args in enumerate(args_list):
-                outcome, pgn_str = _game_worker(args)
-                _record(outcome, pgn_str, i)
+                outcome, pgn_str, is_checkmate, white_mated = _game_worker(args)
+                _record(outcome, pgn_str, is_checkmate, white_mated, i)
     finally:
         if pgn_file:
             pgn_file.close()
 
-    return _summarise(agent_a.name, agent_b.name, wins, draws, losses)
+    return _summarise(agent_a.name, agent_b.name, wins, draws, losses,
+                      white_mates, black_mates)
 
 
 def _summarise(name_a: str, name_b: str,
-               wins: int, draws: int, losses: int) -> dict:
+               wins: int, draws: int, losses: int,
+               white_mates: int = 0, black_mates: int = 0) -> dict:
     total = wins + draws + losses
     score = wins + 0.5 * draws
     wr    = score / total
@@ -424,6 +442,7 @@ def _summarise(name_a: str, name_b: str,
         "win_rate": wr,
         "elo_diff": elo_diff,
         "ci_lo": lo, "ci_hi": hi,
+        "white_mates": white_mates, "black_mates": black_mates,
     }
 
     print(f"\n{'='*55}")
@@ -434,6 +453,7 @@ def _summarise(name_a: str, name_b: str,
     print(f"  Games : {total}  (W={wins} D={draws} L={losses})")
     print(f"  Score : {score:.1f}/{total}  ({wr*100:.1f}%)")
     print(f"  ELO Δ : {elo_diff:+.0f}  (95% CI: [{lo*100:.1f}%, {hi*100:.1f}%])")
+    print(f"  Mates : white={white_mates} black={black_mates} total={white_mates+black_mates}")
     if abs(elo_diff) < 50 and total < 200:
         print(f"  NOTE  : ELO diff < 50 — run more games for a reliable estimate")
     print(f"{'='*55}\n")
